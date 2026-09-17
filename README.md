@@ -16,7 +16,7 @@ It exists because Forgejo has shipped a security release nearly every month of
 | `forgejo-upgrade check` | Print installed and latest versions of both components. |
 | `forgejo-upgrade forgejo <version\|latest>` | Upgrade the Forgejo server. |
 | `forgejo-upgrade runner <version\|latest>` | Upgrade forgejo-runner. |
-| `forgejo-upgrade rollback forgejo\|runner` | Stop, restore the previous binary, start. |
+| `forgejo-upgrade rollback forgejo\|runner` | Stop, restore the previous binary, start, confirm it is active. |
 
 A server upgrade runs these steps in order:
 
@@ -30,14 +30,21 @@ A server upgrade runs these steps in order:
 6. Flush Forgejo's queues, then stop the service.
 7. Take a `forgejo dump` backup into `BACKUP_DIR`.
 8. Copy the old binary to `<name>.prev`, install the new one.
-9. Start the service and poll `/api/healthz` for up to a minute. On failure,
-   print the journal and name the rollback command.
+9. Start the service and poll `/api/healthz` for up to a minute.
 10. Run `forgejo doctor check --all`.
+
+Any failure once the service has been stopped — the health check timing out,
+or an error in an earlier step such as the backup — prints the last 40 lines
+of the journal and the exact command to recover. `rollback` stops the
+service, restores the previous binary, starts it, and confirms the service is
+active again before reporting success.
 
 A runner upgrade is the same minus the queue flush, backup, and doctor. The
 runner's registration lives in its `.runner` file, so no re-registration is
 needed. Stopping through systemd sends `SIGTERM`, which lets in-flight jobs
-finish, bounded by the unit's `TimeoutStopSec`.
+finish. The stock unit sets `TimeoutStopSec=infinity`, so a stuck job blocks
+the upgrade until it finishes; set a finite value in a drop-in if you want a
+bound.
 
 ## Installation
 
@@ -47,8 +54,14 @@ Copy the script to the host that runs Forgejo:
 sudo install -m 755 forgejo-upgrade.sh /usr/local/sbin/forgejo-upgrade
 ```
 
-Requirements: `bash`, `curl`, `gpg`, `sha256sum`, `systemd`. The script must
-run as root because it stops services and writes to `/usr/local/bin`.
+The script upgrades an existing install; it refuses to run when the binary
+it is asked to upgrade is missing.
+
+Requirements: `bash`, `curl`, `gpg`, `sudo`, `sed`, `grep`, GNU coreutils
+(`install`, `sha256sum`, `mktemp`, `cp`, `date`, `seq`), and systemd
+(`systemctl`, `journalctl`). The script must run as root because it stops
+services and writes to `/usr/local/bin`; `sudo` is needed for `sudo -u` even
+though the script itself already runs as root.
 
 ## Configuration
 
@@ -66,15 +79,15 @@ that differ on your host, either on the command line or in a wrapper.
 | `BACKUP_DIR` | `/var/backups/forgejo` | Where dumps go. Created and owned by `FORGEJO_USER`. |
 | `SKIP_BACKUP` | `0` | Set to `1` to skip the dump. |
 | `RUNNER_BIN` | `/usr/local/bin/forgejo-runner` | Runner binary. |
-| `RUNNER_USER` | `forgejo-runner` | User the runner runs as. |
+| `RUNNER_USER` | `runner` | User the runner runs as. |
 | `RUNNER_SERVICE` | `forgejo-runner` | systemd unit name. |
-| `RUNNER_HOME` | `/var/lib/forgejo-runner` | Directory holding the `.runner` registration file. |
+| `RUNNER_HOME` | `/home/runner` | Directory holding the `.runner` registration file (the unit's `WorkingDirectory`). |
 
-Example for a host where the runner's unit is called `runner` and its state
-lives in its home directory:
+Example for a host whose runner unit is called `runner` and keeps its state
+under `/var/lib/forgejo-runner` instead of the default home directory:
 
 ```bash
-sudo RUNNER_SERVICE=runner RUNNER_HOME=/home/forgejo-runner forgejo-upgrade runner latest
+sudo RUNNER_SERVICE=runner RUNNER_HOME=/var/lib/forgejo-runner forgejo-upgrade runner latest
 ```
 
 ### About `latest`
@@ -268,8 +281,9 @@ can reach.
   [Service]
   NoNewPrivileges=true
   ProtectSystem=strict
-  ProtectHome=true
-  ReadWritePaths=/var/lib/forgejo-runner
+  ProtectHome=tmpfs
+  BindPaths=/home/runner
+  ReadWritePaths=/home/runner
   SupplementaryGroups=docker
   PrivateTmp=true
   ProtectKernelTunables=true
@@ -277,6 +291,15 @@ can reach.
   RestrictRealtime=true
   RestrictSUIDSGID=true
   ```
+
+  `ProtectHome=tmpfs` hides the rest of `/home` behind an empty, read-only
+  tmpfs while `BindPaths=` makes `/home/runner` visible again through it, and
+  `ReadWritePaths=` then makes that directory writable; `ReadWritePaths=`
+  alone cannot punch through `ProtectHome`. If you moved the runner's state
+  out of `/home` (for example to `/var/lib/forgejo-runner`), use
+  `ProtectHome=true` instead and list that directory in `ReadWritePaths=`.
+  `TimeoutStopSec=` is where to set a finite stop timeout in this drop-in if
+  you want one; the stock unit sets it to `infinity`.
 
 ### Keep the door locked
 
@@ -299,7 +322,7 @@ the verification path can be exercised without a Forgejo install by sourcing
 the function definitions and downloading a real release:
 
 ```bash
-sed '/^# --- main/,$d' forgejo-upgrade.sh > /tmp/defs.sh && source /tmp/defs.sh && fetch_and_verify "$RUNNER_REPO" "forgejo-runner-13.1.0-linux-$(arch)" 13.1.0
+sed '/^# --- main/,$d' forgejo-upgrade.sh > ./defs.sh && source ./defs.sh && fetch_and_verify "$RUNNER_REPO" "forgejo-runner-13.1.0-linux-$(arch)" 13.1.0
 ```
 
 See `AGENTS.md` for conventions and the facts about Forgejo's release

@@ -53,13 +53,35 @@ that every collaborator picks them up the same way.
   that source in the commit message.
 - **Every failure message must be actionable.** Name what was expected, what
   was observed, and the remedy. Any exit that leaves a service stopped or
-  unhealthy must print the journal and the exact rollback command.
-- **Do not suppress errors blanketly.** `|| true` and `2>/dev/null` are for a
-  specific failure you have decided is acceptable and can say why. The
-  script has three: gpg's human-readable output is discarded because the
-  status-fd line is what gets checked, the optional `.sha256` fetch may fail
-  with a warning, and `flush-queues` may fail with a warning because the
-  service may already be stopped.
+  unhealthy must print the journal and the exact command to recover, which is
+  `systemctl start` when the binary was not replaced and `rollback` when it
+  was.
+- **Do not suppress errors blanketly.** `|| true`, `|| warn`, and
+  `2>/dev/null` are for a specific failure you have decided is acceptable and
+  can say why. In the script:
+  - `on_exit`: `journalctl ... || warn` — the journal may be unreadable; the
+    remedy must still print, and the exit status must be preserved either
+    way.
+  - `on_exit`: `rm -rf "$WORKDIR" || warn` — a cleanup failure must not
+    replace the real exit status.
+  - `ensure_key`: `gpg --list-keys >/dev/null 2>&1` — only the exit status
+    ("is the key present") is used.
+  - `fetch_and_verify`: `gpg --verify ... 2>/dev/null` — the status-fd
+    `VALIDSIG` line is what is checked, not the human-readable output.
+  - `fetch_and_verify`: the optional `.sha256` fetch, `curl ... 2>/dev/null`
+    — it may 404 on older releases, tolerated with a warning.
+  - `wait_forgejo_healthy`: `curl ... >/dev/null 2>&1` — connection refused
+    is expected while the service is still starting.
+  - `upgrade_forgejo`: `flush-queues || warn` — the service may already be
+    stopped.
+  - `upgrade_forgejo`: `doctor check --all || warn` — findings are reported,
+    not fatal.
+  - `upgrade_runner`: `[[ -f $RUNNER_HOME/.runner ]] || warn` — a missing
+    registration file is a RUNNER_HOME warning, not a hard failure.
+
+  `--version 2>&1` in `installed_forgejo` and `installed_runner` is output
+  capture, not suppression: it merges stderr into the string handed to `die`
+  or the version parser so a failure message is not lost.
 - **Fix the underlying bug, not the symptom.** A hand-run `systemctl start`
   or a manual `cp` on the Forgejo host to recover from a script failure is
   the bridge. The code change that stops it recurring is the destination.
@@ -73,10 +95,11 @@ that every collaborator picks them up the same way.
 - **Read official documentation in full before changing behavior that
   depends on it.** The upgrade guide, the binary installation guide, and the
   runner installation guide are short. Read the page, not the heading.
-- **No new dependencies.** The script needs `bash`, `curl`, `gpg`,
-  GNU coreutils (`install`, `sha256sum`, `mktemp`), and `systemd`. Do not
-  add `jq`, Python, or anything else an operator would have to install on a
-  server first. The `tag_name` parser uses `sed` for exactly this reason.
+- **No new dependencies.** The script needs `bash`, `curl`, `gpg`, `sudo`,
+  `sed`, `grep`, GNU coreutils (`install`, `sha256sum`, `mktemp`, `cp`,
+  `date`, `seq`), and systemd (`systemctl`, `journalctl`). Do not add `jq`,
+  Python, or anything else an operator would have to install on a server
+  first. The `tag_name` parser uses `sed` for exactly this reason.
 
 ## Facts about Forgejo release artifacts
 
@@ -111,6 +134,21 @@ re-checking against a current release.
 - **The runner's registration survives a binary swap.** It lives in the
   `.runner` file next to the config. No re-registration after an upgrade.
 
+### Documented install layout
+
+Where the script's user, path, and service defaults come from, per the
+stock unit files:
+<https://code.forgejo.org/forgejo/forgejo/raw/branch/forgejo/contrib/systemd/forgejo.service>
+and
+<https://code.forgejo.org/forgejo/runner/raw/branch/main/contrib/forgejo-runner.service>.
+
+- **Server unit:** `User=git`, binary at `/usr/local/bin/forgejo`, config at
+  `/etc/forgejo/app.ini`, `WorkingDirectory=/var/lib/forgejo`.
+- **Runner unit:** `User=runner`, `WorkingDirectory=/home/runner`,
+  `ExecStart=... daemon -c /home/runner/runner-config.yml`, so the `.runner`
+  registration file lives in `/home/runner`. `TimeoutStopSec=infinity` — the
+  stock unit never gives up waiting for in-flight jobs on `systemctl stop`.
+
 ## Shell style
 
 - `#!/usr/bin/env bash` and `set -euo pipefail`. Must pass `shellcheck` with
@@ -125,12 +163,16 @@ re-checking against a current release.
   to do", not an error. The key import checks the keyring first.
 - **Never leave the service stopped without saying so.** Any exit between
   `systemctl stop` and a successful health check must print the journal and
-  the rollback command.
+  the rollback command. `on_exit` does this: set `STOPPED_SVC`,
+  `STOPPED_KIND`, and `STOPPED_BIN` right after `systemctl stop`, set
+  `BINARY_REPLACED` after the swap, and clear `STOPPED_SVC` only after the
+  health check passes. A new code path between stop and health must keep
+  those assignments.
 - **Linux and systemd only.** Do not add macOS, BSD, or non-systemd code
   paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
   behaviors and that is fine.
 - **The usage text is the script's own header comment**, printed with
-  `sed -n '2,22p'`. Adding a line to the header means updating that range.
+  `sed -n '2,27p'`. Adding a line to the header means updating that range.
 
 ## Testing
 
