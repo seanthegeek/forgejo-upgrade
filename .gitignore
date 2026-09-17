@@ -1,0 +1,41 @@
+# Downloaded release artifacts from local testing
+forgejo-*-linux-*
+forgejo-runner-*-linux-*
+*.asc
+*.sha256
+*.zip
+defs.sh
+
+# Secrets and local overrides - never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.gpg
+
+# Editors and IDEs
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS cruft
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# Patch and backup leftovers
+*.bak
+*.orig
+*.rej
+*.prev
+
+# Scratch space
+tmp/
+*.tmp
+*.log

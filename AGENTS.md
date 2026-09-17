@@ -1,0 +1,221 @@
+# AGENTS.md
+
+## Project overview
+
+One Bash script, `forgejo-upgrade.sh`, that upgrades binary installs of
+[Forgejo](https://forgejo.org) and forgejo-runner on a systemd host. It
+downloads a release, checks the GPG signature and sha256, backs up, swaps the
+binary keeping the old one, restarts the service, and verifies health.
+`README.md` documents usage and a hardening guide for the two services.
+
+No application code, no database, no CI. The deliverable is a script an
+operator runs as root on a machine they cannot afford to break, so caution in
+the script beats cleverness. It is developed on a machine that does not run
+Forgejo and deployed elsewhere by hand.
+
+## Conventions
+
+These rules apply to anyone, human or agent, making changes to this repo.
+They are checked in rather than living in any one agent's private memory so
+that every collaborator picks them up the same way.
+
+- **Wait for explicit commit AND push permission on the default branch.
+  These are separate grants.** Finish the work, run shellcheck, summarize the
+  diff, then stop and ask. "Commit this" mid-session is permission for that
+  one commit, not a standing grant, and permission to commit is never
+  permission to push. If a prior commit was unauthorized, do not push it to
+  tidy up. Surface it and let the author decide.
+  - Before every `git commit`: has the author typed "commit", or an
+    unambiguous equivalent, in a present-tense imperative since your last
+    commit? If not, ask. Conditionals such as "if it works we can push" are
+    plans to confirm, not authorizations. The literal text of the last
+    message governs.
+  - Before every `git push`: has the author typed "push" since your last
+    push? Same rule.
+  - Exception: on a feature branch you created yourself in this session,
+    commit and push to that branch freely. It is reviewed at PR-open. This
+    never extends to `main` or to branches the author created.
+- **Project rules belong here, not in any agent's private memory store.**
+  Memory is for user-profile facts and tool preferences. A rule about this
+  script is portable across agents only if it is written here.
+- **Plain language over jargon.** Comments, log messages, and docs are read
+  by an operator at the moment an upgrade has gone wrong. Where a domain
+  term is the right word, use it and gloss it once.
+- **Never weaken verification to make a download succeed.** No skipping the
+  signature check, no `--insecure`, no falling back to an unverified file, no
+  accepting a signature from a key other than the one pinned in
+  `RELEASE_KEY`. A failed verification stops the upgrade and says why.
+- **The pinned fingerprint is the trust root. Changing it is a security
+  decision, not a fix.** If a signature check starts failing, first check
+  whether the release moved to a new subkey of the same primary key, which
+  the current check already tolerates. Only change `RELEASE_KEY` after
+  confirming the new fingerprint on <https://forgejo.org/download/> and name
+  that source in the commit message.
+- **Every failure message must be actionable.** Name what was expected, what
+  was observed, and the remedy. Any exit that leaves a service stopped or
+  unhealthy must print the journal and the exact rollback command.
+- **Do not suppress errors blanketly.** `|| true` and `2>/dev/null` are for a
+  specific failure you have decided is acceptable and can say why. The
+  script has three: gpg's human-readable output is discarded because the
+  status-fd line is what gets checked, the optional `.sha256` fetch may fail
+  with a warning, and `flush-queues` may fail with a warning because the
+  service may already be stopped.
+- **Fix the underlying bug, not the symptom.** A hand-run `systemctl start`
+  or a manual `cp` on the Forgejo host to recover from a script failure is
+  the bridge. The code change that stops it recurring is the destination.
+  Both happen.
+- **Research order: the live release artifact, then Forgejo's own docs, then
+  Forgejo issues.** Third-party security write-ups and AI explainers are
+  pointers, not evidence. One write-up claimed the 16.0.4 template
+  repository bug needed no account. Forgejo's release notes say it needs a
+  malicious template repository, which needs an account. The docs showed a
+  capitalized version string the binary does not print. Check the artifact.
+- **Read official documentation in full before changing behavior that
+  depends on it.** The upgrade guide, the binary installation guide, and the
+  runner installation guide are short. Read the page, not the heading.
+- **No new dependencies.** The script needs `bash`, `curl`, `gpg`,
+  GNU coreutils (`install`, `sha256sum`, `mktemp`), and `systemd`. Do not
+  add `jq`, Python, or anything else an operator would have to install on a
+  server first. The `tag_name` parser uses `sed` for exactly this reason.
+
+## Facts about Forgejo release artifacts
+
+Each of these was learned by running the script against a real release and
+having it fail. Do not change the code that depends on them without
+re-checking against a current release.
+
+- **Releases are signed by a rotating subkey, not the primary key.** gpg's
+  `VALIDSIG` status line lists the signing subkey fingerprint first and the
+  primary key fingerprint last. The check matches the primary fingerprint at
+  the end of the line, so subkey rotation does not break it. Matching the
+  primary fingerprint right after `VALIDSIG` fails on every release.
+- **The primary key fingerprint is
+  `EB114F5E6C0DC2BCDD183550A4B61A2DC5923710`** per
+  <https://forgejo.org/download/>. The same key signs the runner.
+- **The server binary prints a lowercase `forgejo version 16.0.4+gitea-...`**
+  even though the docs show it capitalized. The version parsers accept
+  either case.
+- **The runner prints `forgejo-runner version v13.1.0`** with a `v` prefix.
+- **Asset names** are `forgejo-<ver>-linux-<arch>` and
+  `forgejo-runner-<ver>-linux-<arch>` under
+  `https://code.forgejo.org/forgejo/<repo>/releases/download/v<ver>/`, each
+  with `.asc` and `.sha256` siblings. The `.sha256` file is standard
+  `sha256sum` format naming the asset, so `sha256sum -c` must run in the
+  directory holding the asset.
+- **The release API's `latest` is across all lines.** On an LTS line it
+  returns the newer stable line's version. That is why the script confirms
+  before a major version change.
+- **Forgejo and the runner are versioned independently.** Server 16.x pairs
+  with runner 13.x. The server release notes state the compatible runner
+  range.
+- **The runner's registration survives a binary swap.** It lives in the
+  `.runner` file next to the config. No re-registration after an upgrade.
+
+## Shell style
+
+- `#!/usr/bin/env bash` and `set -euo pipefail`. Must pass `shellcheck` with
+  no findings. Silence a genuine false positive with a scoped
+  `# shellcheck disable=SCxxxx` and a reason, never by lowering severity.
+- Quote every expansion.
+- **Functions that return a value through stdout must log to stderr.** `log`
+  and `warn` write to stderr for this reason. A log line written to stdout
+  inside `fetch_and_verify` ends up in the caller's `$(...)` and becomes part
+  of a file path.
+- **Every operation is safe to re-run.** Same version installed means "nothing
+  to do", not an error. The key import checks the keyring first.
+- **Never leave the service stopped without saying so.** Any exit between
+  `systemctl stop` and a successful health check must print the journal and
+  the rollback command.
+- **Linux and systemd only.** Do not add macOS, BSD, or non-systemd code
+  paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
+  behaviors and that is fine.
+- **The usage text is the script's own header comment**, printed with
+  `sed -n '2,22p'`. Adding a line to the header means updating that range.
+
+## Testing
+
+There is no Forgejo install on the development machine, so testing is split.
+
+- **Verification path, tested for real.** Source the definitions (everything
+  above the `# --- main` marker) and call `fetch_and_verify` against a current
+  release. The runner binary is about 20 MB and is the cheap one to use.
+- **Prove the negative half.** After a passing verification, append a byte to
+  the downloaded file and confirm the same gpg check rejects it. A signature
+  check that has only ever been seen passing guards nothing.
+- **Version parsers, tested against real output.** Download the binary and
+  feed its `--version` output to `installed_forgejo` / `installed_runner`, or
+  stub the binary with a one-line script that echoes the real string.
+- **Confirm you are testing the edited code.** Sourcing a `defs.sh` extracted
+  earlier in the session silently tests the old script. Regenerate it after
+  every edit, or source directly from the script.
+- **Service orchestration, not testable here.** The stop, backup, install,
+  start, and health check sequence runs only on a Forgejo host. Read it
+  carefully, keep it simple, and say plainly in the summary that it was not
+  executed.
+- **Never run `forgejo`, `runner`, or `rollback` on the development
+  machine.** They require root and would stop services that do not exist
+  here. `check` and the sourced verification functions are the only safe
+  invocations locally.
+- Run `forgejo-upgrade.sh check` after any change to `latest_tag`; it hits
+  the live API.
+
+## Review discipline
+
+Patterns that self-review reliably misses.
+
+- **Nothing is pre-verified.** A rewrite of a function that "does the same
+  thing" carries zero coverage until the verification path runs again. The
+  script was rewritten once from memory after the original was lost, and was
+  re-verified against a real release before being trusted.
+- **When fixing one half of a contract, grep for the other half.** Pairs in
+  this repo: the version regex in each parser and the post-download `grep`
+  that confirms the version; the defaults block in the script and the
+  variable table in `README.md`; the header comment and the `sed` range
+  that prints it; the subcommand `case` and the command table in
+  `README.md`.
+- **An ad hoc check that matches nothing is broken, not green.** A `grep -q`
+  aimed at the wrong string produces a passing-looking result. Make one-off
+  checks fail loudly on zero matches.
+- **Review the rendered text, not just the changed lines.** The hardening
+  section of `README.md` is followed by an operator editing a live server.
+  A wrong `app.ini` key or drop-in directive fails silently or locks them
+  out. Check every key name against Forgejo's configuration cheat sheet.
+- **Report outcomes faithfully.** Say which paths ran and which did not.
+- **End with a fresh-context review.** Before opening a PR, have the final
+  diff read by a reviewer who has seen only the diff, and ask "do these hunks
+  agree with each other?", not "is each hunk correct?".
+
+## Out of scope
+
+- Docker, Podman, or package-manager installs of Forgejo. The script assumes
+  a single binary under `/usr/local/bin` managed by systemd. Container users
+  change an image tag instead.
+- Gitea. It shares ancestry and a similar layout, but its release URLs,
+  signing key, and version strings differ. Do not add a compatibility mode.
+- Major-version migration logic. The script warns and confirms; reading the
+  release notes and restoring a dump if needed remain the operator's job.
+- Managing `app.ini` or the systemd units. The README explains hardening;
+  the script never edits configuration.
+
+## Markdown style
+
+- All markdown must pass VS Code's default markdownlint config.
+- `.vscode/settings.json` sets `"markdownlint.config": {"MD024": false}`.
+- Wrap prose at 80 columns. A single shell command in a fenced block may run
+  longer so it stays one command.
+- Bare URLs go in angle brackets.
+
+## GitHub releases
+
+- Releases are made by version tag, not branch.
+- Tags are prefixed with `v`. Release titles exclude the prefix.
+- Attach `forgejo-upgrade.sh` to the release so it can be fetched with one
+  `curl`.
+
+## Documentation
+
+`README.md` is deliberately the whole manual: usage, configuration, and
+hardening for a one-script project. If it grows past those three topics,
+move the hardening guide to `docs/hardening.md` and leave the README as an
+overview and pointer. Update the docs in the same change as the behavior
+they describe.
