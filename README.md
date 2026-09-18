@@ -93,7 +93,7 @@ three places it came from.
 | `FORGEJO_SERVICE` | — | `forgejo` |
 | `FORGEJO_BIN` | `ExecStart=` program | `/usr/local/bin/forgejo` |
 | `FORGEJO_USER` | `User=` | `git` |
-| `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` | `<work path>/custom/conf/app.ini` if it exists, else `/etc/forgejo/app.ini` |
+| `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` (relative to `WorkingDirectory=`, or `/` if unset) | Forgejo's own default: `<work path>/custom/conf/app.ini`, work path from `Environment=` (`FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`) or `--work-path`, else the binary's directory; `custom` is assumed since `FORGEJO_CUSTOM`/`--custom-path` are not read; `/etc/forgejo/app.ini` only if the unit is not found |
 | `FORGEJO_WORK_PATH` | `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=`, then `--work-path`/`-w` in `ExecStart=`, then `WorkingDirectory=`, then `WORK_PATH` in `app.ini` | unset; Forgejo then uses the directory holding the binary, with a warning |
 | `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); with `http+unix` the URL is `http://unix` and curl dials `FORGEJO_SOCKET` | `http://127.0.0.1:3000` |
 | `FORGEJO_SOCKET` | `HTTP_ADDR` in `[server]` when `PROTOCOL` is `http+unix`, whatever `LOCAL_ROOT_URL` says, because that is the socket Forgejo itself dials | unset |
@@ -344,8 +344,10 @@ can reach.
   ```
 
   `docker_host: "-"` stops the runner from mounting the Docker socket into
-  job containers. Set `network: ""` instead if jobs must not reach the
-  network at all.
+  job containers. Set `network: none` if jobs must have no network access
+  at all. An empty value (`network: ""`) does not isolate anything: it
+  tells the runner to create a network per job, which still has outbound
+  access.
 - Only register runners at repository or organization scope unless every
   repository on the instance is yours.
 - Apply a systemd drop-in to the runner too. It needs write access to its

@@ -54,7 +54,13 @@ FORGEJO_SOCKET=${FORGEJO_SOCKET:-}
 # The unit's Environment= settings, passed to the binary when the script runs
 # it as FORGEJO_USER. Filled in by resolve_forgejo_settings.
 FORGEJO_ENV=()
+# Recorded before the default is applied, since the assignments below would
+# otherwise erase whether the operator actually set these, and the settings
+# block needs to say "env" or "default" for them like it does for everything
+# else.
+BACKUP_DIR_SRC=${BACKUP_DIR:+env}; BACKUP_DIR_SRC=${BACKUP_DIR_SRC:-default}
 BACKUP_DIR=${BACKUP_DIR:-/var/backups/forgejo}
+SKIP_BACKUP_SRC=${SKIP_BACKUP:+env}; SKIP_BACKUP_SRC=${SKIP_BACKUP_SRC:-default}
 SKIP_BACKUP=${SKIP_BACKUP:-0}
 
 RUNNER_SERVICE=${RUNNER_SERVICE:-}
@@ -67,8 +73,10 @@ RUNNER_REG_FILE=""
 
 # Where each resolved value came from, for the settings block the resolvers
 # print. Kept as plain variables so the block can name a source per setting.
+FORGEJO_SERVICE_SRC=""
 FORGEJO_BIN_SRC=""; FORGEJO_USER_SRC=""; FORGEJO_CONFIG_SRC=""
 FORGEJO_WORK_PATH_SRC=""; FORGEJO_URL_SRC=""; FORGEJO_SOCKET_SRC=""
+RUNNER_SERVICE_SRC=""
 RUNNER_BIN_SRC=""; RUNNER_HOME_SRC=""; RUNNER_CONFIG_SRC=""
 RUNNER_REG_FILE_SRC=""
 
@@ -143,13 +151,29 @@ latest_tag() {  # $1 = repo URL -> prints e.g. 16.0.5
     | sed -n 's/.*"tag_name":"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1
 }
 
+# The two parsers below are the only place that knows what each binary prints.
+# Both the "what is installed" reading and the check on a freshly downloaded
+# binary go through them, so the two cannot drift apart.
+
+parse_forgejo_version() {  # $1 = output of "forgejo --version" -> the version, empty when there is none
+  # The server binary prints "forgejo version 16.0.5+gitea-1.22.0 (release
+  # name 16.0.5) ..." in lower case, though the docs show it capitalized, so
+  # either case is accepted.
+  sed -n 's/^[Ff]orgejo version \([0-9][0-9.]*\).*/\1/p' <<<"$1" | head -n1
+}
+
+parse_runner_version() {  # $1 = output of "forgejo-runner --version" -> the version, empty when there is none
+  # The runner prints "forgejo-runner version v13.1.0", with a "v" in front of
+  # the number that the version this script works with does not have.
+  sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' <<<"$1" | head -n1
+}
+
 installed_forgejo() {
   [[ -x $FORGEJO_BIN ]] || { echo none; return; }
   local out ver
   out=$("$FORGEJO_BIN" --version 2>&1) \
     || die "$FORGEJO_BIN --version failed (exit $?): '${out%%$'\n'*}'. The binary may be corrupt or built for another architecture; reinstall it, or set FORGEJO_BIN to the binary you want upgraded"
-  # binary prints "forgejo version 16.0.4+gitea-1.22.0 (release name 16.0.4) ..."
-  ver=$(sed -n 's/^[Ff]orgejo version \([0-9][0-9.]*\).*/\1/p' <<<"$out")
+  ver=$(parse_forgejo_version "$out")
   [[ -n $ver ]] || die "could not read a version from '$FORGEJO_BIN --version'. Expected a line like 'forgejo version 16.0.4', got: '${out%%$'\n'*}'"
   echo "$ver"
 }
@@ -159,8 +183,7 @@ installed_runner() {
   local out ver
   out=$("$RUNNER_BIN" --version 2>&1) \
     || die "$RUNNER_BIN --version failed (exit $?): '${out%%$'\n'*}'. The binary may be corrupt or built for another architecture; reinstall it, or set RUNNER_BIN to the binary you want upgraded"
-  # binary prints "forgejo-runner version v13.1.0"
-  ver=$(sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' <<<"$out")
+  ver=$(parse_runner_version "$out")
   [[ -n $ver ]] || die "could not read a version from '$RUNNER_BIN --version'. Expected a line like 'forgejo-runner version v13.1.0', got: '${out%%$'\n'*}'"
   echo "$ver"
 }
@@ -428,10 +451,15 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
 
   local unit loaded=0 dsrc=default
   local exec_path="" argv_line="" user_prop="" workdir_prop="" env_line=""
-  local wp="" cfg=""
+  local wp="" cfg="" cfgroot=""
   local -a argv=()
 
-  if [[ -z $FORGEJO_SERVICE ]]; then FORGEJO_SERVICE=forgejo; fi
+  if [[ -z $FORGEJO_SERVICE ]]; then
+    FORGEJO_SERVICE=forgejo
+    FORGEJO_SERVICE_SRC="default"
+  else
+    FORGEJO_SERVICE_SRC="env"
+  fi
   unit=$(unit_name "$FORGEJO_SERVICE")
 
   if unit_loaded "$FORGEJO_SERVICE"; then
@@ -490,9 +518,11 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
 
   # The work path is settled before the config, because Forgejo's own default
-  # config path sits under it. Forgejo reads the work path from FORGEJO_WORK_DIR
-  # (GITEA_WORK_DIR on older installs), then --work-path, and the unit's
-  # WorkingDirectory is what the daemon actually runs in.
+  # config path sits under the work path. Forgejo reads that work path from
+  # FORGEJO_WORK_DIR (GITEA_WORK_DIR on older installs), then --work-path, and
+  # nowhere else. The unit's WorkingDirectory below is this script's own last
+  # guess at where the data lives; it is not one of Forgejo's sources, so the
+  # config block further down does not use it (see the note there).
   if [[ -n $FORGEJO_WORK_PATH ]]; then
     FORGEJO_WORK_PATH_SRC="env"
   else
@@ -522,14 +552,55 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     FORGEJO_CONFIG_SRC="env"
   else
     cfg=$(argv_opt --config -c -- ${argv[@]+"${argv[@]}"})
-    if [[ -n $cfg ]]; then
+    if [[ -n $cfg && $cfg == /* ]]; then
       FORGEJO_CONFIG=$cfg
       FORGEJO_CONFIG_SRC="unit ExecStart --config"
-    elif [[ -n $FORGEJO_WORK_PATH && -f $FORGEJO_WORK_PATH/custom/conf/app.ini ]]; then
-      # Forgejo's own default when no --config is given.
-      FORGEJO_CONFIG=$FORGEJO_WORK_PATH/custom/conf/app.ini
-      FORGEJO_CONFIG_SRC="Forgejo default under the work path"
+    elif [[ -n $cfg ]]; then
+      # Forgejo puts a relative --config through filepath.Abs, so it is
+      # relative to the directory the daemon runs in: the unit's
+      # WorkingDirectory, or / when the unit does not set one, which is what
+      # systemd gives a system service. resolve_runner_settings does the same
+      # for its -c. The trailing slash is already off workdir_prop, so a
+      # WorkingDirectory of / arrives here as the empty string.
+      if [[ -n $workdir_prop ]]; then
+        FORGEJO_CONFIG=$workdir_prop/$cfg
+      else
+        FORGEJO_CONFIG=/$cfg
+      fi
+      FORGEJO_CONFIG_SRC="unit ExecStart --config, relative to WorkingDirectory"
+    elif [[ $loaded -eq 1 ]]; then
+      # No --config in ExecStart, so Forgejo works the path out itself
+      # (modules/setting/path.go, InitWorkPathAndCfgProvider): the config is
+      # custom/conf/app.ini under the work path, and the work path for this
+      # purpose is FORGEJO_WORK_DIR or GITEA_WORK_DIR, then --work-path, else
+      # the directory holding the binary. WorkingDirectory is not one of those,
+      # so the guess made above from it must not be used here. WORK_PATH in
+      # app.ini cannot move the config either: Forgejo reads it only after it
+      # has found the file. FORGEJO_CUSTOM and --custom-path are not read and
+      # "custom" is assumed; an install that moved that directory sets
+      # FORGEJO_CONFIG. There is deliberately no check that the file exists:
+      # falling back to /etc/forgejo/app.ini here would point the backup and
+      # the doctor run at a file the daemon is not reading. If it is missing,
+      # the "cannot read the Forgejo config" check below says so and names the
+      # variable to set.
+      case "$FORGEJO_WORK_PATH_SRC" in
+        env|"unit Environment FORGEJO_WORK_DIR"|"unit Environment GITEA_WORK_DIR"|"unit ExecStart --work-path")
+          cfgroot=$FORGEJO_WORK_PATH ;;
+        *)
+          # The directory holding the binary. Done with a parameter expansion
+          # rather than dirname so the script still needs nothing new; a bare
+          # name with no slash in it means the current directory, and a binary
+          # directly in / leaves the empty string, which the line below reads
+          # as /.
+          if [[ $FORGEJO_BIN == */* ]]; then cfgroot=${FORGEJO_BIN%/*}; else cfgroot=.; fi ;;
+      esac
+      # Never double the slash below; a work path of / leaves the empty string,
+      # which is right.
+      FORGEJO_CONFIG=${cfgroot%/}/custom/conf/app.ini
+      FORGEJO_CONFIG_SRC="Forgejo default; no --config in ExecStart"
     else
+      # No unit to read, so there is nothing to work the path out from; the
+      # documented install keeps it here.
       FORGEJO_CONFIG=/etc/forgejo/app.ini
       FORGEJO_CONFIG_SRC=$dsrc
     fi
@@ -583,6 +654,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
   if [[ $quiet -eq 0 ]]; then
     log "Forgejo settings for $unit (override any with the env var):"
+    setting_line FORGEJO_SERVICE   "$FORGEJO_SERVICE"              "$FORGEJO_SERVICE_SRC"
     setting_line FORGEJO_BIN       "$FORGEJO_BIN"                  "$FORGEJO_BIN_SRC"
     setting_line FORGEJO_USER      "$FORGEJO_USER"                 "$FORGEJO_USER_SRC"
     setting_line FORGEJO_CONFIG    "$FORGEJO_CONFIG"               "$FORGEJO_CONFIG_SRC"
@@ -591,6 +663,8 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     if [[ -n $FORGEJO_SOCKET_SRC ]]; then
       setting_line FORGEJO_SOCKET  "${FORGEJO_SOCKET:-(none)}"     "$FORGEJO_SOCKET_SRC"
     fi
+    setting_line BACKUP_DIR        "$BACKUP_DIR"                   "$BACKUP_DIR_SRC"
+    setting_line SKIP_BACKUP       "$SKIP_BACKUP"                  "$SKIP_BACKUP_SRC"
   fi
 
   # Said after the block, so the operator reads what was found first.
@@ -614,7 +688,12 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   local exec_path="" argv_line="" workdir_prop="" cfg="" regfile=""
   local -a argv=()
 
-  if [[ -z $RUNNER_SERVICE ]]; then RUNNER_SERVICE=forgejo-runner; fi
+  if [[ -z $RUNNER_SERVICE ]]; then
+    RUNNER_SERVICE=forgejo-runner
+    RUNNER_SERVICE_SRC="default"
+  else
+    RUNNER_SERVICE_SRC="env"
+  fi
   unit=$(unit_name "$RUNNER_SERVICE")
 
   if unit_loaded "$RUNNER_SERVICE"; then
@@ -702,6 +781,7 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   fi
   if [[ $quiet -eq 0 ]]; then
     log "forgejo-runner settings for $unit (override any with the env var):"
+    setting_line RUNNER_SERVICE  "$RUNNER_SERVICE"             "$RUNNER_SERVICE_SRC"
     setting_line RUNNER_BIN      "$RUNNER_BIN"                 "$RUNNER_BIN_SRC"
     setting_line RUNNER_HOME     "$RUNNER_HOME"                "$RUNNER_HOME_SRC"
     setting_line RUNNER_CONFIG   "${RUNNER_CONFIG:-(none)}"    "$RUNNER_CONFIG_SRC"
@@ -783,7 +863,7 @@ upgrade_forgejo() {
   # config, and which address to health check. This dies on anything that
   # would not work, while the service is still running.
   resolve_forgejo_settings
-  local want cur new
+  local want cur new got out
   want=$(resolve_version "$1" "$FORGEJO_REPO") || die "could not resolve version"
   [[ -n $want ]] || die "could not determine Forgejo version"
   cur=$(installed_forgejo)
@@ -802,8 +882,15 @@ upgrade_forgejo() {
 
   ensure_key
   new=$(fetch_and_verify "$FORGEJO_REPO" "forgejo-$want-linux-$(arch)" "$want")
-  "$new" --version | grep -q "^[Ff]orgejo version $want" \
-    || die "downloaded binary does not report version $want"
+  # Captured first, so a binary that will not run at all says why instead of
+  # being reported as the wrong version. Then compared as a whole string, not
+  # grepped: a pattern built from $want treats the dots as wildcards and has no
+  # end anchor, so a check for 16.0.5 used to accept a binary reporting 16.0.50.
+  out=$("$new" --version 2>&1) \
+    || die "$new --version failed (exit $?): '${out%%$'\n'*}'. The downloaded binary does not run on this host; check the architecture reported by uname -m against the asset name, then rerun"
+  got=$(parse_forgejo_version "$out")
+  [[ $got == "$want" ]] \
+    || die "downloaded binary reports version '${got:-none}', expected $want. Its --version output was: '${out%%$'\n'*}'"
 
   # Prove what can be proved while the service is still up. A health check that
   # cannot pass now will not pass after the restart either, and a backup that
@@ -888,7 +975,7 @@ upgrade_runner() {
   # registration file is. This dies on anything that would not work, while the
   # runner is still up.
   resolve_runner_settings
-  local want cur new
+  local want cur new got out
   want=$(resolve_version "$1" "$RUNNER_REPO") || die "could not resolve version"
   [[ -n $want ]] || die "could not determine runner version"
   cur=$(installed_runner)
@@ -897,8 +984,15 @@ upgrade_runner() {
 
   ensure_key
   new=$(fetch_and_verify "$RUNNER_REPO" "forgejo-runner-$want-linux-$(arch)" "$want")
-  "$new" --version | grep -q "$want" \
-    || die "downloaded binary does not report version $want"
+  # Captured first, so a binary that will not run at all says why instead of
+  # being reported as the wrong version. Then compared as a whole string, not
+  # grepped: a pattern built from $want treats the dots as wildcards and had no
+  # anchors at all here, so a check for 1.2.3 used to accept 11.2.30.
+  out=$("$new" --version 2>&1) \
+    || die "$new --version failed (exit $?): '${out%%$'\n'*}'. The downloaded binary does not run on this host; check the architecture reported by uname -m against the asset name, then rerun"
+  got=$(parse_runner_version "$out")
+  [[ $got == "$want" ]] \
+    || die "downloaded binary reports version '${got:-none}', expected $want. Its --version output was: '${out%%$'\n'*}'"
 
   # SIGTERM lets the runner finish in-flight jobs. The stock unit sets
   # TimeoutStopSec=infinity, so the wait is unbounded unless a drop-in sets a finite value.
@@ -967,16 +1061,27 @@ settings() {
 }
 
 check() {
-  local f r
+  local f r fl rl
   # Tolerant and quiet: check only reports versions, and it is the one command
   # that is expected to work on a half-installed host.
   resolve_forgejo_settings --tolerant --quiet
   resolve_runner_settings --tolerant --quiet
   f=$(installed_forgejo)
   r=$(installed_runner)
+  # Captured before printing: inside a printf argument list, "$(...)" failing
+  # would not fail the printf itself, so a dead API would silently print
+  # blank "latest" columns and exit 0 instead of stopping here.
+  fl=$(latest_tag "$FORGEJO_REPO") \
+    || die "could not fetch the latest Forgejo release from the code.forgejo.org API; check that this host can reach https://code.forgejo.org, then rerun"
+  [[ -n $fl ]] \
+    || die "the code.forgejo.org API answered but gave no Forgejo release tag; expected a tag_name in the response. Check https://code.forgejo.org/forgejo/forgejo/releases and rerun"
+  rl=$(latest_tag "$RUNNER_REPO") \
+    || die "could not fetch the latest forgejo-runner release from the code.forgejo.org API; check that this host can reach https://code.forgejo.org, then rerun"
+  [[ -n $rl ]] \
+    || die "the code.forgejo.org API answered but gave no forgejo-runner release tag; expected a tag_name in the response. Check https://code.forgejo.org/forgejo/runner/releases and rerun"
   printf '%-16s %-12s %-12s\n' component installed latest
-  printf '%-16s %-12s %-12s\n' forgejo "$f" "$(latest_tag "$FORGEJO_REPO")"
-  printf '%-16s %-12s %-12s\n' forgejo-runner "$r" "$(latest_tag "$RUNNER_REPO")"
+  printf '%-16s %-12s %-12s\n' forgejo "$f" "$fl"
+  printf '%-16s %-12s %-12s\n' forgejo-runner "$r" "$rl"
   echo
   echo "Security announcements: https://codeberg.org/forgejo/security-announcements/issues"
 }

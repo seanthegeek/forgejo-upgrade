@@ -95,7 +95,10 @@ that every collaborator picks them up the same way.
 
   `--version 2>&1` in `installed_forgejo` and `installed_runner` is output
   capture, not suppression: it merges stderr into the string handed to `die`
-  or the version parser so a failure message is not lost.
+  or the version parser so a failure message is not lost. The post-download
+  checks in `upgrade_forgejo` and `upgrade_runner` capture the downloaded
+  binary's `--version` output the same way and show it in the failure
+  message.
 - **Fix the underlying bug, not the symptom.** A hand-run `systemctl start`
   or a manual `cp` on the Forgejo host to recover from a script failure is
   the bridge. The code change that stops it recurring is the destination.
@@ -197,6 +200,17 @@ and
   `--work-path` explicitly or inherit `FORGEJO_WORK_DIR` from the unit's
   `Environment=`, or it looks for data next to the binary instead of where
   Forgejo actually keeps it.
+- **A relative `--config` resolves against the daemon's current
+  directory, not against the work path.** Per `modules/setting/path.go`'s
+  `InitWorkPathAndCfgProvider`, a relative path is passed through
+  `filepath.Abs`, which resolves it there: the unit's `WorkingDirectory=`,
+  or `/` when that is unset. With no `--config` at all, the file is
+  `<work path>/custom/conf/app.ini`, where the work path is
+  `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`, then `--work-path`, else the
+  directory holding the binary; `WorkingDirectory=` is never a work-path
+  source. `WORK_PATH` in `app.ini` is read only after the config file is
+  located, so it cannot move the config. Checked against the current
+  `forgejo` branch source.
 - **`LOCAL_ROOT_URL` is what Forgejo itself uses for local requests**, and
   its default depends on `PROTOCOL` — `http://unix/` for `http+unix`.
   Prefer it over reconstructing a URL from `HTTP_ADDR` and `HTTP_PORT` when
@@ -290,13 +304,15 @@ Patterns that self-review reliably misses.
   script was rewritten once from memory after the original was lost, and was
   re-verified against a real release before being trusted.
 - **When fixing one half of a contract, grep for the other half.** Pairs in
-  this repo: the version regex in each parser and the post-download `grep`
-  that confirms the version; the defaults block in the script and the
-  variable table in `README.md`; the header comment and the `sed` range
-  that prints it; the subcommand `case` and the command table in
-  `README.md`; the settings tables in `README.md` and the two
-  `resolve_*_settings` functions; the header's override list and the
-  README tables.
+  this repo: the shared `parse_forgejo_version` / `parse_runner_version`
+  parsers, used by both `installed_*` and the post-download check — a
+  change to the sed pattern must be tested against both a real `--version`
+  string and the exact-match compare in `upgrade_forgejo` /
+  `upgrade_runner`; the defaults block in the script and the variable
+  table in `README.md`; the header comment and the `sed` range that prints
+  it; the subcommand `case` and the command table in `README.md`; the
+  settings tables in `README.md` and the two `resolve_*_settings`
+  functions; the header's override list and the README tables.
 - **An ad hoc check that matches nothing is broken, not green.** A `grep -q`
   aimed at the wrong string produces a passing-looking result. Make one-off
   checks fail loudly on zero matches.
