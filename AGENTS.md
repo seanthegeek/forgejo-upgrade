@@ -64,20 +64,32 @@ that every collaborator picks them up the same way.
     way.
   - `on_exit`: `rm -rf "$WORKDIR" || warn` — a cleanup failure must not
     replace the real exit status.
-  - `ensure_key`: `gpg --list-keys >/dev/null 2>&1` — only the exit status
-    ("is the key present") is used.
+  - `ensure_key`: `gpg --list-keys "$RELEASE_KEY" >/dev/null 2>&1` — only the
+    exit status ("is the key present") is used.
   - `fetch_and_verify`: `gpg --verify ... 2>/dev/null` — the status-fd
     `VALIDSIG` line is what is checked, not the human-readable output.
   - `fetch_and_verify`: the optional `.sha256` fetch, `curl ... 2>/dev/null`
     — it may 404 on older releases, tolerated with a warning.
-  - `wait_forgejo_healthy`: `curl ... >/dev/null 2>&1` — connection refused
-    is expected while the service is still starting.
+  - `resolve_forgejo_settings`: `id -u "$FORGEJO_USER" >/dev/null 2>&1` —
+    only the exit status ("does this user exist") is used; the message on
+    failure is the script's own, not `id`'s.
+  - `run_as`: `command -v runuser >/dev/null` and
+    `command -v sudo >/dev/null` — only "is it on `PATH`" is checked, not
+    any output.
+  - `healthz`: `curl ... >/dev/null 2>&1` — connection refused is expected
+    while the service is still starting.
+  - `die_unknown_unit`: `systemctl list-units ... || candidates=""` — the
+    unit listing is a best-effort hint; if it fails too, the real "unit not
+    found" error still has to print, so this failure is swallowed
+    deliberately rather than masking that error.
   - `upgrade_forgejo`: `flush-queues || warn` — the service may already be
     stopped.
+  - `upgrade_forgejo`: the pre-stop run check,
+    `runcheck=$(as_forgejo --version 2>&1)` — output capture for the
+    error message, not suppression; if the command fails, its output is
+    shown to the operator before anything is stopped.
   - `upgrade_forgejo`: `doctor check --all || warn` — findings are reported,
     not fatal.
-  - `upgrade_runner`: `[[ -f $RUNNER_HOME/.runner ]] || warn` — a missing
-    registration file is a RUNNER_HOME warning, not a hard failure.
 
   `--version 2>&1` in `installed_forgejo` and `installed_runner` is output
   capture, not suppression: it merges stderr into the string handed to `die`
@@ -95,11 +107,12 @@ that every collaborator picks them up the same way.
 - **Read official documentation in full before changing behavior that
   depends on it.** The upgrade guide, the binary installation guide, and the
   runner installation guide are short. Read the page, not the heading.
-- **No new dependencies.** The script needs `bash`, `curl`, `gpg`, `sudo`,
-  `sed`, `grep`, GNU coreutils (`install`, `sha256sum`, `mktemp`, `cp`,
-  `date`, `seq`), and systemd (`systemctl`, `journalctl`). Do not add `jq`,
-  Python, or anything else an operator would have to install on a server
-  first. The `tag_name` parser uses `sed` for exactly this reason.
+- **No new dependencies.** The script needs `bash`, `curl`, `gpg`, `runuser`
+  (util-linux) or `sudo`, `sed`, `grep`, GNU coreutils (`install`,
+  `sha256sum`, `mktemp`, `cp`, `date`, `seq`, `stat`), and systemd
+  (`systemctl`, `journalctl`). Do not add `jq`, Python, or anything else an
+  operator would have to install on a server first. The `tag_name` parser
+  uses `sed` for exactly this reason.
 
 ## Facts about Forgejo release artifacts
 
@@ -115,9 +128,9 @@ re-checking against a current release.
 - **The primary key fingerprint is
   `EB114F5E6C0DC2BCDD183550A4B61A2DC5923710`** per
   <https://forgejo.org/download/>. The same key signs the runner.
-- **The server binary prints a lowercase `forgejo version 16.0.4+gitea-...`**
-  even though the docs show it capitalized. The version parsers accept
-  either case.
+- **The server binary prints a lowercase `forgejo version 16.0.5+gitea-...`**
+  even though the docs show it capitalized (re-confirmed against the 16.0.5
+  binary today). The version parsers accept either case.
 - **The runner prints `forgejo-runner version v13.1.0`** with a `v` prefix.
 - **Asset names** are `forgejo-<ver>-linux-<arch>` and
   `forgejo-runner-<ver>-linux-<arch>` under
@@ -148,6 +161,42 @@ and
   `ExecStart=... daemon -c /home/runner/runner-config.yml`, so the `.runner`
   registration file lives in `/home/runner`. `TimeoutStopSec=infinity` — the
   stock unit never gives up waiting for in-flight jobs on `systemctl stop`.
+- **`systemctl show UNIT -p PROP --value` has two shapes worth knowing.**
+  `ExecStart` comes back as one record,
+  `{ path=/usr/local/bin/forgejo ; argv[]=/usr/local/bin/forgejo web -c /x ;
+  ignore_errors=no ; ... }`, so the program and its arguments have to be
+  pulled back out of that record rather than read as separate fields.
+  `Environment` comes back as one space-separated `KEY=VALUE ...` line.
+- **`systemctl show` exits `0` even for a unit that does not exist.** The
+  only signal that the unit is real is `LoadState=loaded`; a unit systemd
+  has never heard of reports `LoadState=not-found` with the same zero exit
+  status, so the exit status cannot be what the script checks.
+- **Forgejo's CLI global flags — `--config`, `--work-path`,
+  `--custom-path` — go before the subcommand, not after**
+  (`forgejo --config X dump`, not `forgejo dump --config X`), and with none
+  of them given the default work path is the directory holding the binary.
+  A CLI call the script makes on the operator's behalf has to pass
+  `--work-path` explicitly or inherit `FORGEJO_WORK_DIR` from the unit's
+  `Environment=`, or it looks for data next to the binary instead of where
+  Forgejo actually keeps it.
+- **`LOCAL_ROOT_URL` is what Forgejo itself uses for local requests**, and
+  its default depends on `PROTOCOL` — `http://unix/` for `http+unix`.
+  Prefer it over reconstructing a URL from `HTTP_ADDR` and `HTTP_PORT` when
+  it is set.
+- **The runner's registration file is named by `runner.file` in its own
+  config**, resolved relative to the daemon's working directory, not to the
+  config file's own directory.
+- **No read-only Forgejo command loads `app.ini` without a side effect.**
+  Running `dump` with `--help`, or `doctor check` with `--list`, exits 0
+  with a nonexistent `--config` — the CLI prints help before the config is
+  looked at, so neither proves anything about the config. `doctor check
+  --run paths` does load `app.ini` and needs no database, but when
+  `[security] INTERNAL_TOKEN` or `[oauth2] JWT_SECRET` are missing it
+  writes them into `app.ini`, reflows the file, and sets its mode to
+  `0600`; it also creates `data/tmp/package-upload` under the work path.
+  Checked against forgejo 16.0.5. The pre-stop checks therefore prove only
+  that the binary runs as `FORGEJO_USER` and that the account can read the
+  config and write `BACKUP_DIR`.
 
 ## Shell style
 
@@ -172,7 +221,7 @@ and
   paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
   behaviors and that is fine.
 - **The usage text is the script's own header comment**, printed with
-  `sed -n '2,27p'`. Adding a line to the header means updating that range.
+  `sed -n '2,33p'`. Adding a line to the header means updating that range.
 
 ## Testing
 
@@ -200,6 +249,12 @@ There is no Forgejo install on the development machine, so testing is split.
   invocations locally.
 - Run `forgejo-upgrade.sh check` after any change to `latest_tag`; it hits
   the live API.
+- **Settings resolution, tested against a stub, not a real unit.** Put a
+  fake `systemctl` on `PATH` under `tmp/bin/` that prints the captured real
+  `systemctl show` formats (see "Documented install layout" above) for a
+  fixed set of units, and run `forgejo-upgrade.sh settings` against that.
+  Never point `resolve_forgejo_settings` or `resolve_runner_settings` at a
+  real unit on this machine; there isn't one.
 
 ## Review discipline
 
@@ -214,7 +269,9 @@ Patterns that self-review reliably misses.
   that confirms the version; the defaults block in the script and the
   variable table in `README.md`; the header comment and the `sed` range
   that prints it; the subcommand `case` and the command table in
-  `README.md`.
+  `README.md`; the settings tables in `README.md` and the two
+  `resolve_*_settings` functions; the header's override list and the
+  README tables.
 - **An ad hoc check that matches nothing is broken, not green.** A `grep -q`
   aimed at the wrong string produces a passing-looking result. Make one-off
   checks fail loudly on zero matches.
