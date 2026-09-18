@@ -67,7 +67,7 @@ it is asked to upgrade is missing.
 
 Requirements: `bash`, `curl`, `gpg`, `runuser` (util-linux, present on every
 systemd host) or `sudo`, `sed`, `grep`, GNU coreutils (`install`,
-`sha256sum`, `mktemp`, `cp`, `date`, `seq`, `stat`), and systemd
+`sha256sum`, `mktemp`, `cp`, `date`, `stat`), and systemd
 (`systemctl`, `journalctl`). The script must run as root because it stops
 services and writes to `/usr/local/bin`; `runuser` or `sudo` is needed to
 run Forgejo's own commands as `FORGEJO_USER` even though the script itself
@@ -95,7 +95,8 @@ three places it came from.
 | `FORGEJO_USER` | `User=` | `git` |
 | `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` | `<work path>/custom/conf/app.ini` if it exists, else `/etc/forgejo/app.ini` |
 | `FORGEJO_WORK_PATH` | `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=`, then `--work-path`/`-w` in `ExecStart=`, then `WorkingDirectory=`, then `WORK_PATH` in `app.ini` | unset; Forgejo then uses the directory holding the binary, with a warning |
-| `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); `http+unix` uses the socket in `HTTP_ADDR` via `curl --unix-socket` | `http://127.0.0.1:3000` |
+| `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); with `http+unix` the URL is `http://unix` and curl dials `FORGEJO_SOCKET` | `http://127.0.0.1:3000` |
+| `FORGEJO_SOCKET` | `HTTP_ADDR` in `[server]` when `PROTOCOL` is `http+unix`, whatever `LOCAL_ROOT_URL` says, because that is the socket Forgejo itself dials | unset |
 | `BACKUP_DIR` | — | `/var/backups/forgejo` |
 | `SKIP_BACKUP` | — | `0` |
 
@@ -272,8 +273,9 @@ Create `/etc/systemd/system/forgejo.service.d/hardening.conf`:
 [Service]
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/forgejo /etc/forgejo
+ProtectHome=tmpfs
+BindPaths=/home/git
+ReadWritePaths=/var/lib/forgejo /etc/forgejo /home/git
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
@@ -295,7 +297,17 @@ CapabilityBoundingSet=
 
 Adjust `ReadWritePaths` to wherever your repositories, LFS objects, and
 attachments live. If Forgejo writes its log elsewhere, add that path too.
-Then:
+
+`/home/git` is there for SSH. Unless Forgejo runs its built-in SSH server,
+it manages `authorized_keys` under `SSH_ROOT_PATH`, which defaults to the
+service user's `~/.ssh`, and the install guide creates that user with its
+home at `/home/git`. `ProtectHome=true` would hide the whole of `/home`,
+and adding a key in the web UI would then fail. `ProtectHome=tmpfs` hides
+`/home` behind an empty tmpfs, `BindPaths=` shows `/home/git` through it
+again, and `ReadWritePaths=` makes it writable. If the service user's home
+is outside `/home`, or `START_SSH_SERVER = true`, or `sshd` uses an
+`AuthorizedKeysCommand` with `SSH_CREATE_AUTHORIZED_KEYS_FILE = false`,
+use `ProtectHome=true` and drop the `BindPaths=` line. Then:
 
 ```bash
 sudo systemctl daemon-reload && sudo systemctl restart forgejo && sudo systemd-analyze security forgejo

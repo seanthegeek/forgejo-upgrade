@@ -77,7 +77,9 @@ that every collaborator picks them up the same way.
     `command -v sudo >/dev/null` — only "is it on `PATH`" is checked, not
     any output.
   - `healthz`: `curl ... >/dev/null 2>&1` — connection refused is expected
-    while the service is still starting.
+    while the service is still starting. Each attempt is capped with
+    `--max-time`, and `wait_forgejo_healthy` runs against a clock, not a
+    count, so the documented one-minute limit is real.
   - `die_unknown_unit`: `systemctl list-units ... || candidates=""` — the
     unit listing is a best-effort hint; if it fails too, the real "unit not
     found" error still has to print, so this failure is swallowed
@@ -109,7 +111,7 @@ that every collaborator picks them up the same way.
   runner installation guide are short. Read the page, not the heading.
 - **No new dependencies.** The script needs `bash`, `curl`, `gpg`, `runuser`
   (util-linux) or `sudo`, `sed`, `grep`, GNU coreutils (`install`,
-  `sha256sum`, `mktemp`, `cp`, `date`, `seq`, `stat`), and systemd
+  `sha256sum`, `mktemp`, `cp`, `date`, `stat`), and systemd
   (`systemctl`, `journalctl`). Do not add `jq`, Python, or anything else an
   operator would have to install on a server first. The `tag_name` parser
   uses `sed` for exactly this reason.
@@ -167,6 +169,22 @@ and
   ignore_errors=no ; ... }`, so the program and its arguments have to be
   pulled back out of that record rather than read as separate fields.
   `Environment` comes back as one space-separated `KEY=VALUE ...` line.
+- **The `argv[]` in that record is not quoted, so it is lossy.** Checked
+  on systemd 259: `--setenv` and a spaced argument produce
+  `argv[]=/bin/echo -c /path with spaces/app.ini plain`, with nothing to
+  say where one argument ends. A path containing a space cannot be read
+  back from `systemctl show`; the script reads it truncated and the
+  pre-stop checks refuse it, and the operator sets the env var instead.
+  `Environment`, by contrast, *is* shell-quoted:
+  `FJ_A=plain "FJ_B=has space" "FJ_C=a\"b\$c\\d'e*?"`, so a plain
+  `read -a` cuts a quoted entry in two and `env` then runs the second half
+  as the command. That is why the script `eval`s that one line into an
+  array.
+- **`LOCAL_ROOT_URL` does not change which socket Forgejo dials.** With
+  `PROTOCOL = http+unix`, Forgejo's own internal client connects to the
+  socket in `HTTP_ADDR` no matter what `LOCAL_ROOT_URL` says
+  (`modules/private/internal.go`). The script therefore resolves the
+  socket before, and independently of, the URL.
 - **`systemctl show` exits `0` even for a unit that does not exist.** The
   only signal that the unit is real is `LoadState=loaded`; a unit systemd
   has never heard of reports `LoadState=not-found` with the same zero exit
@@ -213,15 +231,22 @@ and
 - **Never leave the service stopped without saying so.** Any exit between
   `systemctl stop` and a successful health check must print the journal and
   the rollback command. `on_exit` does this: set `STOPPED_SVC`,
-  `STOPPED_KIND`, and `STOPPED_BIN` right after `systemctl stop`, set
-  `BINARY_REPLACED` after the swap, and clear `STOPPED_SVC` only after the
-  health check passes. A new code path between stop and health must keep
-  those assignments.
+  `STOPPED_KIND`, and `STOPPED_BIN` right *before* `systemctl stop` (a stop
+  that fails or is interrupted may already have taken the unit down),
+  `install_binary` sets `BINARY_REPLACED` after `.prev` exists and before
+  `install` runs (`install` unlinks and rewrites the destination, so a
+  failed copy still needs `.prev`), and `STOPPED_SVC` is cleared only after
+  the health check passes. A new code path between stop and health must
+  keep those assignments.
+- **`eval` appears exactly once**, to turn the `Environment=` line from
+  `systemctl show` back into an array. It is there because systemd emits
+  that line as shell-quoted words and nothing else undoes that quoting
+  without a new dependency. Do not add a second use.
 - **Linux and systemd only.** Do not add macOS, BSD, or non-systemd code
   paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
   behaviors and that is fine.
 - **The usage text is the script's own header comment**, printed with
-  `sed -n '2,33p'`. Adding a line to the header means updating that range.
+  `sed -n '2,34p'`. Adding a line to the header means updating that range.
 
 ## Testing
 

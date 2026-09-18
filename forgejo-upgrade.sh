@@ -16,6 +16,7 @@
 #   FORGEJO_CONFIG     /etc/forgejo/app.ini
 #   FORGEJO_WORK_PATH  unset; Forgejo then uses the directory holding the binary
 #   FORGEJO_URL        http://127.0.0.1:3000   (used for the health check)
+#   FORGEJO_SOCKET     unset; read from HTTP_ADDR when PROTOCOL is http+unix
 #   BACKUP_DIR         /var/backups/forgejo    (must be writable by FORGEJO_USER)
 #   SKIP_BACKUP        set to 1 to skip `forgejo dump`
 #   RUNNER_SERVICE     forgejo-runner
@@ -46,8 +47,9 @@ FORGEJO_USER=${FORGEJO_USER:-}
 FORGEJO_CONFIG=${FORGEJO_CONFIG:-}
 FORGEJO_WORK_PATH=${FORGEJO_WORK_PATH:-}
 FORGEJO_URL=${FORGEJO_URL:-}
-# Only used when Forgejo listens on a unix socket; normally derived from
-# app.ini, where HTTP_ADDR holds the socket path when PROTOCOL is http+unix.
+# Only used when Forgejo listens on a unix socket. Read from app.ini, where
+# HTTP_ADDR holds the socket path when PROTOCOL is http+unix, unless the
+# operator sets it here.
 FORGEJO_SOCKET=${FORGEJO_SOCKET:-}
 # The unit's Environment= settings, passed to the binary when the script runs
 # it as FORGEJO_USER. Filled in by resolve_forgejo_settings.
@@ -66,7 +68,7 @@ RUNNER_REG_FILE=""
 # Where each resolved value came from, for the settings block the resolvers
 # print. Kept as plain variables so the block can name a source per setting.
 FORGEJO_BIN_SRC=""; FORGEJO_USER_SRC=""; FORGEJO_CONFIG_SRC=""
-FORGEJO_WORK_PATH_SRC=""; FORGEJO_URL_SRC=""
+FORGEJO_WORK_PATH_SRC=""; FORGEJO_URL_SRC=""; FORGEJO_SOCKET_SRC=""
 RUNNER_BIN_SRC=""; RUNNER_HOME_SRC=""; RUNNER_CONFIG_SRC=""
 RUNNER_REG_FILE_SRC=""
 
@@ -84,14 +86,18 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- exit handling -----------------------------------------------------------
 
-# STOPPED_SVC is set once a service has been stopped and cleared again once it
-# is healthy. If the script exits anywhere in between - including an error that
-# "set -e" turns into an exit, or a Ctrl-C - on_exit runs and tells the operator
-# that the service is down, what the journal says, and how to get it running.
-STOPPED_SVC=""   # systemd unit currently stopped by this script, "" when none
+# STOPPED_SVC is set just before a service is asked to stop and cleared again
+# once it is healthy. If the script exits anywhere in between - including an
+# error that "set -e" turns into an exit, a Ctrl-C, or a stop that failed or
+# was interrupted after systemd had already begun stopping the unit - on_exit
+# runs and tells the operator that the service is probably down, what the
+# journal says, and how to get it running.
+STOPPED_SVC=""   # systemd unit this script is stopping or has stopped, "" when none
 STOPPED_KIND=""  # "forgejo" or "runner", i.e. the argument to `rollback`
 STOPPED_BIN=""   # path of the binary for that service
-BINARY_REPLACED=0  # 0 = binary untouched, 1 = new binary in place, 2 = rolled back
+# 0 = binary untouched, 1 = a new binary was written over it (possibly only
+# partly, if the copy itself failed) and .prev holds the old one, 2 = rolled back
+BINARY_REPLACED=0
 
 on_exit() {
   local rc=$?
@@ -100,7 +106,7 @@ on_exit() {
     journalctl -u "$STOPPED_SVC" -n 40 --no-pager >&2 \
       || warn "could not read the journal; try it by hand: journalctl -u $STOPPED_SVC -n 40"
     case $BINARY_REPLACED in
-      1) warn "the new binary is installed and the previous one is kept at $STOPPED_BIN.prev"
+      1) warn "a new binary was written to $STOPPED_BIN (the copy may not have completed) and the previous one is kept at $STOPPED_BIN.prev"
          warn "try: systemctl start $STOPPED_SVC"
          warn "if that fails, put the previous binary back with: $0 rollback $STOPPED_KIND" ;;
       # 2 means a rollback already moved the previous binary back over the new
@@ -201,6 +207,11 @@ install_binary() {  # $1 = new file, $2 = destination
   # always exists and there is always a previous binary worth keeping.
   log "Keeping previous binary at $2.prev"
   cp -p "$2" "$2.prev"
+  # Set before install runs, not after it returns: install unlinks the
+  # destination and writes a new file, so a failure part way (a full disk, say)
+  # leaves a truncated binary behind. From here on the remedy is .prev, and
+  # on_exit must say so even if the very next command fails.
+  BINARY_REPLACED=1
   # Keep the owner, group, and mode the installed binary already had instead of
   # forcing root:root 755. A hardened install may, for example, let only one
   # group run the binary, and re-creating it as world-executable root:root
@@ -335,6 +346,25 @@ $candidates
 Set $2 to the unit name, for example $2=$3 if your unit is $3.service"
 }
 
+resolve_forgejo_socket() {  # $1 = 1 to warn instead of dying when the socket is missing, $2 = 1 to stay quiet
+  # Only meaningful when PROTOCOL is http+unix. Forgejo then dials the socket
+  # named by HTTP_ADDR for its own local requests whatever LOCAL_ROOT_URL
+  # says, so the socket is settled here on its own, before and independently
+  # of the URL, and applies to whichever URL the health check ends up using.
+  local tolerant=$1 quiet=$2 proto addr
+  proto=$(ini_get "$FORGEJO_CONFIG" server PROTOCOL)
+  [[ $proto == http+unix ]] || return 0
+  addr=$(ini_get "$FORGEJO_CONFIG" server HTTP_ADDR)
+  if [[ -n $addr ]]; then
+    FORGEJO_SOCKET=$addr
+    FORGEJO_SOCKET_SRC="app.ini [server] HTTP_ADDR"
+    return 0
+  fi
+  local msg="PROTOCOL is http+unix in $FORGEJO_CONFIG but HTTP_ADDR does not give a socket path, so the health check has nowhere to connect. Set FORGEJO_SOCKET to the socket file"
+  if [[ $tolerant -eq 0 ]]; then die "$msg"; elif [[ $quiet -eq 0 ]]; then warn "$msg"; fi
+  FORGEJO_SOCKET_SRC="unknown; PROTOCOL=http+unix needs FORGEJO_SOCKET"
+}
+
 resolve_forgejo_url() {  # $1 = 1 to warn instead of dying when the URL is unguessable, $2 = 1 to stay quiet
   # Works out the address the health check should ask. LOCAL_ROOT_URL is what
   # Forgejo itself uses for local requests, so it is the first choice.
@@ -364,13 +394,8 @@ resolve_forgejo_url() {  # $1 = 1 to warn instead of dying when the URL is ungue
       FORGEJO_URL_SRC="app.ini [server] PROTOCOL, HTTP_ADDR, HTTP_PORT"
       ;;
     http+unix)
-      # With http+unix, HTTP_ADDR is the socket path and the host name in the
-      # URL is ignored; curl dials the socket instead.
-      if [[ -z $addr ]]; then
-        local msg="PROTOCOL is http+unix in $FORGEJO_CONFIG but HTTP_ADDR does not give a socket path, so the health check has nowhere to connect. Set FORGEJO_SOCKET to the socket file and FORGEJO_URL to http://unix"
-        if [[ $tolerant -eq 0 ]]; then die "$msg"; elif [[ $quiet -eq 0 ]]; then warn "$msg"; fi
-      fi
-      FORGEJO_SOCKET=$addr
+      # The host name in the URL is ignored; curl dials FORGEJO_SOCKET, which
+      # resolve_forgejo_socket has already settled or complained about.
       FORGEJO_URL="http://unix"
       FORGEJO_URL_SRC="app.ini [server] PROTOCOL=http+unix"
       ;;
@@ -427,11 +452,21 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     workdir_prop=$(unit_prop "$FORGEJO_SERVICE" WorkingDirectory)
     env_line=$(unit_prop "$FORGEJO_SERVICE" Environment)
     workdir_prop=${workdir_prop%/}
-    # Split on spaces the way a shell would. systemd quotes a value containing
-    # spaces, and such a value would be split here too, which is why only
-    # whole words - option names and paths - are read back out.
+    # argv[] is printed with a plain space between arguments and no quoting
+    # at all, so an argument that contains a space cannot be told apart from
+    # two arguments (checked against systemd 259). Only whole words - option
+    # names and paths - are read back out. A path with a space comes back
+    # truncated, and the checks further down then refuse it before anything
+    # is stopped, naming the env var to set instead.
     read -r -a argv <<<"$argv_line"
-    read -r -a FORGEJO_ENV <<<"$env_line"
+    # Environment= is different: systemctl prints it as shell words, and a
+    # value with a space or a shell character is double-quoted and escaped
+    # the way a shell expects, e.g. `A=plain "B=has space"`. A plain word
+    # split would cut that second entry in two, and env would then try to run
+    # the second half as the command. eval on an array assignment undoes the
+    # quoting exactly, and is safe here because systemd has already escaped
+    # every character the shell could otherwise interpret.
+    eval "FORGEJO_ENV=($env_line)"
   fi
 
   if [[ -n $FORGEJO_BIN ]]; then
@@ -513,6 +548,13 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
   FORGEJO_WORK_PATH=${FORGEJO_WORK_PATH%/}
 
+  # The socket comes first and on its own, so that it is found whether the
+  # URL is read from app.ini or given by the operator.
+  if [[ -n $FORGEJO_SOCKET ]]; then
+    FORGEJO_SOCKET_SRC="env"
+  elif [[ -r $FORGEJO_CONFIG ]]; then
+    resolve_forgejo_socket "$tolerant" "$quiet"
+  fi
   if [[ -n $FORGEJO_URL ]]; then
     FORGEJO_URL_SRC="env"
   elif [[ -r $FORGEJO_CONFIG ]]; then
@@ -546,8 +588,8 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     setting_line FORGEJO_CONFIG    "$FORGEJO_CONFIG"               "$FORGEJO_CONFIG_SRC"
     setting_line FORGEJO_WORK_PATH "${FORGEJO_WORK_PATH:-(none)}"  "$FORGEJO_WORK_PATH_SRC"
     setting_line FORGEJO_URL       "${FORGEJO_URL:-(none)}"        "$FORGEJO_URL_SRC"
-    if [[ -n $FORGEJO_SOCKET ]]; then
-      setting_line FORGEJO_SOCKET  "$FORGEJO_SOCKET"               "app.ini [server] HTTP_ADDR"
+    if [[ -n $FORGEJO_SOCKET_SRC ]]; then
+      setting_line FORGEJO_SOCKET  "${FORGEJO_SOCKET:-(none)}"     "$FORGEJO_SOCKET_SRC"
     fi
   fi
 
@@ -591,6 +633,8 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     argv_line=$(unit_exec_argv "$RUNNER_SERVICE")
     workdir_prop=$(unit_prop "$RUNNER_SERVICE" WorkingDirectory)
     workdir_prop=${workdir_prop%/}
+    # Same lossy argv[] format as for the Forgejo unit, see there. A -c path
+    # containing a space comes back truncated and is reported as unreadable.
     read -r -a argv <<<"$argv_line"
   fi
 
@@ -698,10 +742,10 @@ as_forgejo() {  # run the Forgejo binary as its own user with the resolved setti
 
 # --- health checks -----------------------------------------------------------
 
-healthz() {  # one attempt -> 0 when the server answers
+healthz() {  # $1 = seconds to allow this one attempt (default 5) -> 0 when the server answers
   # Connection refused is expected while the service is still starting, so only
   # the exit status is used and curl's own message is dropped.
-  local -a opts=(-fs --max-time 5)
+  local -a opts=(-fs --max-time "${1:-5}")
   if [[ -n $FORGEJO_SOCKET ]]; then
     opts+=(--unix-socket "$FORGEJO_SOCKET")
   fi
@@ -709,16 +753,20 @@ healthz() {  # one attempt -> 0 when the server answers
 }
 
 wait_forgejo_healthy() {
-  log "Waiting for $FORGEJO_URL/api/healthz"
-  local i
-  for i in $(seq 1 60); do
-    if healthz; then
-      log "Service answered on attempt $i"
+  local limit=60 start=$SECONDS left
+  log "Waiting up to ${limit}s for $FORGEJO_URL/api/healthz"
+  # Driven by the clock, not by a count of attempts: an attempt can take its
+  # whole per-request allowance when the server accepts the connection but
+  # does not answer, and sixty of those would be six minutes, not one. Each
+  # attempt gets at most five seconds and never more than what is left.
+  while left=$(( limit - (SECONDS - start) )) && [[ $left -gt 0 ]]; do
+    if healthz "$(( left < 5 ? left : 5 ))"; then
+      log "Service answered after $(( SECONDS - start ))s"
       return 0
     fi
     sleep 1
   done
-  die "service did not answer $FORGEJO_URL/api/healthz within 60s"
+  die "service did not answer $FORGEJO_URL/api/healthz within ${limit}s"
 }
 
 wait_runner_active() {
@@ -745,7 +793,10 @@ upgrade_forgejo() {
   if [[ ${cur%%.*} != "${want%%.*}" ]]; then
     warn "major version change ${cur%%.*} -> ${want%%.*}: read the release notes first:"
     warn "  $FORGEJO_REPO/src/branch/forgejo/release-notes-published/$want.md"
-    [[ -t 0 ]] || die "major version change ${cur%%.*} -> ${want%%.*} needs confirmation; run this from a terminal, or pass the exact version you want on the command line"
+    # There is no way to confirm without a terminal: passing an exact version
+    # still lands here, because it is the change of major version that needs
+    # a decision, not how the version was chosen.
+    [[ -t 0 ]] || die "major version change ${cur%%.*} -> ${want%%.*} needs confirmation and stdin is not a terminal; run this from a terminal so the prompt can be answered"
     read -r -p "Continue? [y/N] " a; [[ $a == [yY] ]] || exit 1
   fi
 
@@ -773,7 +824,9 @@ upgrade_forgejo() {
   if [[ $SKIP_BACKUP != 1 ]]; then
     # Make the backup directory now rather than after the stop: creating it is
     # the same work either way, and a failure here costs no downtime.
-    install -d -o "$FORGEJO_USER" -g "$FORGEJO_USER" -m 750 "$BACKUP_DIR"
+    # The group is the account's primary group, not a group named after the
+    # account: a service user called forgejo may well belong to group git.
+    install -d -o "$FORGEJO_USER" -g "$(id -gn "$FORGEJO_USER")" -m 750 "$BACKUP_DIR"
     # What the three checks below prove: the binary starts as FORGEJO_USER with
     # the unit's Environment, and that account can read the config and write
     # the dump where the dump is going. What they do not prove: that app.ini
@@ -794,11 +847,13 @@ Check FORGEJO_USER and FORGEJO_BIN, or set SKIP_BACKUP=1 to upgrade without a du
   fi
 
   log "Stopping $FORGEJO_SERVICE"
-  systemctl stop "$FORGEJO_SERVICE"
+  # Set before the stop, not after: a stop that fails or is interrupted may
+  # already have taken the service down, and on_exit has to know about it.
   # From here until the health check passes, any exit is reported by on_exit.
   STOPPED_SVC="$FORGEJO_SERVICE"
   STOPPED_KIND=forgejo
   STOPPED_BIN="$FORGEJO_BIN"
+  systemctl stop "$FORGEJO_SERVICE"
 
   if [[ $SKIP_BACKUP != 1 ]]; then
     local dump
@@ -810,7 +865,6 @@ Check FORGEJO_USER and FORGEJO_BIN, or set SKIP_BACKUP=1 to upgrade without a du
   fi
 
   install_binary "$new" "$FORGEJO_BIN"
-  BINARY_REPLACED=1
 
   log "Starting $FORGEJO_SERVICE"
   systemctl start "$FORGEJO_SERVICE"
@@ -849,14 +903,15 @@ upgrade_runner() {
   # SIGTERM lets the runner finish in-flight jobs. The stock unit sets
   # TimeoutStopSec=infinity, so the wait is unbounded unless a drop-in sets a finite value.
   log "Stopping $RUNNER_SERVICE (waits for running jobs)"
-  systemctl stop "$RUNNER_SERVICE"
-  # From here until the runner is active again, any exit is reported by on_exit.
+  # Set before the stop, not after: the wait for jobs is unbounded, and a
+  # Ctrl-C during it still leaves the runner stopping. From here until the
+  # runner is active again, any exit is reported by on_exit.
   STOPPED_SVC="$RUNNER_SERVICE"
   STOPPED_KIND=runner
   STOPPED_BIN="$RUNNER_BIN"
+  systemctl stop "$RUNNER_SERVICE"
 
   install_binary "$new" "$RUNNER_BIN"
-  BINARY_REPLACED=1
 
   log "Starting $RUNNER_SERVICE"
   systemctl start "$RUNNER_SERVICE"
@@ -885,10 +940,11 @@ rollback() {
   esac
   [[ -x $bin.prev ]] || die "no $bin.prev to roll back to"
   log "Rolling back $bin to $("$bin.prev" --version)"
-  systemctl stop "$svc"
+  # Tracked before the stop for the same reason as in the upgrades.
   STOPPED_SVC="$svc"
   STOPPED_KIND="$kind"
   STOPPED_BIN="$bin"
+  systemctl stop "$svc"
   mv -f "$bin.prev" "$bin"
   # 2, not 1: the move consumed the .prev file, so if this rollback fails there
   # is no older binary left and on_exit must not suggest rolling back again.
@@ -935,5 +991,5 @@ case "${1:-}" in
   rollback) rollback "${2:-}" ;;
   # The usage text is this script's own header comment. Adding a line to it
   # means moving the end of this range.
-  *) sed -n '2,33p' "$0"; exit 1 ;;
+  *) sed -n '2,34p' "$0"; exit 1 ;;
 esac
