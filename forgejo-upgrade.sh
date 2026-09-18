@@ -201,6 +201,23 @@ ensure_key() {
   fi
 }
 
+fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; dies otherwise
+  # Deliberately no -f: without it curl reports the status code instead of one
+  # generic failure, and only a 404 means "this release has no .sha256". A DNS
+  # failure, a TLS error, a timeout, or a 500 must stop the upgrade rather than
+  # pass for "not published" and quietly leave the checksum unverified.
+  local code
+  code=$(curl -sSL -o "$2" -w '%{http_code}' "$1") \
+    || die "could not download $1 (curl exit $?). Expected either the release's .sha256 file or a 404 saying there is none; check this host's network access to code.forgejo.org and rerun"
+  case "$code" in
+    200) return 0 ;;
+    # With no -f, curl writes the server's error page into the file, so a 404
+    # leaves something behind that is not a checksum. Take it away.
+    404) rm -f "$2"; return 1 ;;
+    *)   die "unexpected HTTP $code fetching $1. Expected 200 with the checksum file, or 404 meaning the release has none; what the server actually sent is left in $2 to look at. Rerun, and if it keeps happening check whether code.forgejo.org is having trouble" ;;
+  esac
+}
+
 fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
   local base="$1/releases/download/v$3" f="$2"
   log "Downloading $f"
@@ -214,11 +231,15 @@ fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
     | grep -Eq "^\[GNUPG:\] VALIDSIG .* $RELEASE_KEY$" \
     || die "signature on $f is not from $RELEASE_KEY"
 
-  if curl -fsSL -o "$WORKDIR/$f.sha256" "$base/$f.sha256" 2>/dev/null; then
+  # Older releases do not publish a .sha256 at all, which fetch_sha256 reports
+  # as a 404 and nothing else.
+  if fetch_sha256 "$base/$f.sha256" "$WORKDIR/$f.sha256"; then
     log "Verifying sha256"
+    # The .sha256 file names the asset, so the check has to run in the
+    # directory holding it.
     (cd "$WORKDIR" && sha256sum -c --quiet "$f.sha256") || die "sha256 mismatch for $f"
   else
-    warn "no .sha256 published for $f; relying on GPG signature only"
+    warn "no .sha256 published for $f (HTTP 404); relying on the GPG signature only"
   fi
 
   chmod 755 "$WORKDIR/$f"
@@ -353,6 +374,16 @@ forgejo_env_value() {  # $1 = variable name -> its value from the unit's Environ
   return 0
 }
 
+trim_slash() {  # $1 -> $1 with its trailing slashes off, except that / stays /
+  # Every path below is joined as "${dir%/}/rest", so a directory is stored
+  # without a trailing slash. The root directory is the exception: "${X%/}"
+  # alone would turn / into the empty string, and empty is this script's
+  # "nobody set this" sentinel.
+  local p=$1
+  while [[ $p == */ && $p != / ]]; do p=${p%/}; done
+  printf '%s\n' "$p"
+}
+
 setting_line() {  # $1 = name, $2 = value, $3 = where the value came from
   printf '    %-17s %-31s (%s)\n' "$1" "$2" "$3" >&2
 }
@@ -438,12 +469,13 @@ resolve_forgejo_url() {  # $1 = 1 to warn instead of dying when the URL is ungue
   esac
 }
 
-resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the block
-  local tolerant=0 quiet=0
+resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the block, --rollback: do not require the installed binary
+  local tolerant=0 quiet=0 for_rollback=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --tolerant) tolerant=1 ;;
       --quiet)    quiet=1 ;;
+      --rollback) for_rollback=1 ;;
       *) die "resolve_forgejo_settings: unknown option $1 (this is a bug in the script)" ;;
     esac
     shift
@@ -451,7 +483,10 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
 
   local unit loaded=0 dsrc=default
   local exec_path="" argv_line="" user_prop="" workdir_prop="" env_line=""
-  local wp="" cfg="" cfgroot=""
+  local wp="" cfg="" cfgroot="" cfgbase=""
+  # A disagreement between app.ini and the unit over the work path, held back
+  # so it prints after the settings block rather than before it.
+  local wp_clash=""
   local -a argv=()
 
   if [[ -z $FORGEJO_SERVICE ]]; then
@@ -479,7 +514,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     user_prop=$(unit_prop "$FORGEJO_SERVICE" User)
     workdir_prop=$(unit_prop "$FORGEJO_SERVICE" WorkingDirectory)
     env_line=$(unit_prop "$FORGEJO_SERVICE" Environment)
-    workdir_prop=${workdir_prop%/}
+    workdir_prop=$(trim_slash "$workdir_prop")
     # argv[] is printed with a plain space between arguments and no quoting
     # at all, so an argument that contains a space cannot be told apart from
     # two arguments (checked against systemd 259). Only whole words - option
@@ -518,11 +553,15 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
 
   # The work path is settled before the config, because Forgejo's own default
-  # config path sits under the work path. Forgejo reads that work path from
-  # FORGEJO_WORK_DIR (GITEA_WORK_DIR on older installs), then --work-path, and
-  # nowhere else. The unit's WorkingDirectory below is this script's own last
-  # guess at where the data lives; it is not one of Forgejo's sources, so the
-  # config block further down does not use it (see the note there).
+  # config path sits under the work path. Forgejo's own order
+  # (modules/setting/path.go, InitWorkPathAndCfgProvider) is: FORGEJO_WORK_DIR
+  # in the environment (GITEA_WORK_DIR on older installs), then --work-path,
+  # else the directory holding the binary. Then, once the config file has been
+  # read, WORK_PATH in app.ini replaces whatever those gave - which is why the
+  # block further down, after the config path is known, can still change the
+  # answer. The unit's WorkingDirectory= is never one of Forgejo's sources;
+  # systemd only uses it to pick the directory the process starts in, so this
+  # script does not read a work path out of it either.
   if [[ -n $FORGEJO_WORK_PATH ]]; then
     FORGEJO_WORK_PATH_SRC="env"
   else
@@ -540,13 +579,11 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
         if [[ -n $wp ]]; then
           FORGEJO_WORK_PATH=$wp
           FORGEJO_WORK_PATH_SRC="unit ExecStart --work-path"
-        elif [[ -n $workdir_prop ]]; then
-          FORGEJO_WORK_PATH=$workdir_prop
-          FORGEJO_WORK_PATH_SRC="unit WorkingDirectory"
         fi
       fi
     fi
   fi
+  FORGEJO_WORK_PATH=$(trim_slash "$FORGEJO_WORK_PATH")
 
   if [[ -n $FORGEJO_CONFIG ]]; then
     FORGEJO_CONFIG_SRC="env"
@@ -560,40 +597,37 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
       # relative to the directory the daemon runs in: the unit's
       # WorkingDirectory, or / when the unit does not set one, which is what
       # systemd gives a system service. resolve_runner_settings does the same
-      # for its -c. The trailing slash is already off workdir_prop, so a
-      # WorkingDirectory of / arrives here as the empty string.
-      if [[ -n $workdir_prop ]]; then
-        FORGEJO_CONFIG=$workdir_prop/$cfg
-      else
-        FORGEJO_CONFIG=/$cfg
-      fi
+      # for its -c. workdir_prop has any trailing slashes off already, and
+      # stripping one more below is what keeps a WorkingDirectory of / from
+      # joining as "//".
+      cfgbase=${workdir_prop:-/}
+      FORGEJO_CONFIG=${cfgbase%/}/$cfg
       FORGEJO_CONFIG_SRC="unit ExecStart --config, relative to WorkingDirectory"
     elif [[ $loaded -eq 1 ]]; then
       # No --config in ExecStart, so Forgejo works the path out itself
       # (modules/setting/path.go, InitWorkPathAndCfgProvider): the config is
       # custom/conf/app.ini under the work path, and the work path for this
-      # purpose is FORGEJO_WORK_DIR or GITEA_WORK_DIR, then --work-path, else
-      # the directory holding the binary. WorkingDirectory is not one of those,
-      # so the guess made above from it must not be used here. WORK_PATH in
-      # app.ini cannot move the config either: Forgejo reads it only after it
-      # has found the file. FORGEJO_CUSTOM and --custom-path are not read and
+      # purpose is whatever the environment or --work-path gave, else the
+      # directory holding the binary - every source the block above reads, and
+      # no other. WORK_PATH in app.ini cannot move the config: Forgejo reads
+      # it only after it has found the file, which is why the block below runs
+      # after this one. FORGEJO_CUSTOM and --custom-path are not read and
       # "custom" is assumed; an install that moved that directory sets
       # FORGEJO_CONFIG. There is deliberately no check that the file exists:
       # falling back to /etc/forgejo/app.ini here would point the backup and
       # the doctor run at a file the daemon is not reading. If it is missing,
       # the "cannot read the Forgejo config" check below says so and names the
       # variable to set.
-      case "$FORGEJO_WORK_PATH_SRC" in
-        env|"unit Environment FORGEJO_WORK_DIR"|"unit Environment GITEA_WORK_DIR"|"unit ExecStart --work-path")
-          cfgroot=$FORGEJO_WORK_PATH ;;
-        *)
-          # The directory holding the binary. Done with a parameter expansion
-          # rather than dirname so the script still needs nothing new; a bare
-          # name with no slash in it means the current directory, and a binary
-          # directly in / leaves the empty string, which the line below reads
-          # as /.
-          if [[ $FORGEJO_BIN == */* ]]; then cfgroot=${FORGEJO_BIN%/*}; else cfgroot=.; fi ;;
-      esac
+      if [[ -n $FORGEJO_WORK_PATH ]]; then
+        cfgroot=$FORGEJO_WORK_PATH
+      else
+        # The directory holding the binary. Done with a parameter expansion
+        # rather than dirname so the script still needs nothing new; a bare
+        # name with no slash in it means the current directory, and a binary
+        # directly in / leaves the empty string, which the line below reads
+        # as /.
+        if [[ $FORGEJO_BIN == */* ]]; then cfgroot=${FORGEJO_BIN%/*}; else cfgroot=.; fi
+      fi
       # Never double the slash below; a work path of / leaves the empty string,
       # which is right.
       FORGEJO_CONFIG=${cfgroot%/}/custom/conf/app.ini
@@ -606,18 +640,27 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     fi
   fi
 
-  # Last place to look for a work path: app.ini can set WORK_PATH, and it sits
-  # in the keys before the first [section].
-  if [[ -z $FORGEJO_WORK_PATH ]]; then
-    wp=$(ini_get "$FORGEJO_CONFIG" "" WORK_PATH)
+  # Forgejo's last word on the work path: WORK_PATH in app.ini, which sits in
+  # the keys before the first [section]. Forgejo reads it once the config file
+  # has been found and it replaces the value the environment or --work-path
+  # gave, so it replaces the one found above too. The operator's own
+  # FORGEJO_WORK_PATH is the one thing it does not override; an env var set on
+  # the command line wins over every source in this script.
+  if [[ $FORGEJO_WORK_PATH_SRC != env ]]; then
+    wp=$(trim_slash "$(ini_get "$FORGEJO_CONFIG" "" WORK_PATH)")
     if [[ -n $wp ]]; then
+      if [[ -n $FORGEJO_WORK_PATH && $wp != "$FORGEJO_WORK_PATH" ]]; then
+        wp_clash="app.ini sets WORK_PATH = $wp but the unit gives $FORGEJO_WORK_PATH (from: $FORGEJO_WORK_PATH_SRC); Forgejo uses the app.ini value and logs an error about the mismatch on every start, so this script uses $wp too. Remove the outdated value from the unit to silence it"
+      fi
       FORGEJO_WORK_PATH=$wp
       FORGEJO_WORK_PATH_SRC="app.ini WORK_PATH"
-    else
+    elif [[ -z $FORGEJO_WORK_PATH ]]; then
+      # Nothing anywhere set one, so Forgejo will use the directory holding the
+      # binary and this script leaves --work-path off; the warning at the end
+      # of the block says so.
       FORGEJO_WORK_PATH_SRC="not set"
     fi
   fi
-  FORGEJO_WORK_PATH=${FORGEJO_WORK_PATH%/}
 
   # The socket comes first and on its own, so that it is found whether the
   # URL is read from app.ini or given by the operator.
@@ -640,8 +683,14 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # Everything an upgrade depends on is checked here, while the service is
   # still untouched, so a wrong path cannot surface with Forgejo stopped.
   if [[ $tolerant -eq 0 ]]; then
-    [[ -x $FORGEJO_BIN ]] \
-      || die "no executable at $FORGEJO_BIN (from: $FORGEJO_BIN_SRC). This script upgrades an existing install; install Forgejo first (https://forgejo.org/docs/latest/admin/installation/binary/), or set FORGEJO_BIN to where it lives"
+    # A rollback is run precisely when the installed binary may be missing or
+    # half-written, which is what it exists to undo, so it skips this one check
+    # and nothing else. What a rollback needs is $FORGEJO_BIN.prev, and
+    # rollback checks for that itself.
+    if [[ $for_rollback -eq 0 ]]; then
+      [[ -x $FORGEJO_BIN ]] \
+        || die "no executable at $FORGEJO_BIN (from: $FORGEJO_BIN_SRC). This script upgrades an existing install; install Forgejo first (https://forgejo.org/docs/latest/admin/installation/binary/), or set FORGEJO_BIN to where it lives"
+    fi
     # Only the exit status matters; the "no such user" text is replaced by an
     # actionable message.
     id -u "$FORGEJO_USER" >/dev/null 2>&1 \
@@ -668,17 +717,21 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
 
   # Said after the block, so the operator reads what was found first.
+  if [[ -n $wp_clash && $quiet -eq 0 ]]; then
+    warn "$wp_clash"
+  fi
   if [[ -z $FORGEJO_WORK_PATH && $quiet -eq 0 ]]; then
     warn "no work path found in the unit or in $FORGEJO_CONFIG; Forgejo will fall back to the directory holding $FORGEJO_BIN. If that is not where its data lives, set FORGEJO_WORK_PATH."
   fi
 }
 
-resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the block
-  local tolerant=0 quiet=0
+resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the block, --rollback: do not require the installed binary
+  local tolerant=0 quiet=0 for_rollback=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --tolerant) tolerant=1 ;;
       --quiet)    quiet=1 ;;
+      --rollback) for_rollback=1 ;;
       *) die "resolve_runner_settings: unknown option $1 (this is a bug in the script)" ;;
     esac
     shift
@@ -711,7 +764,7 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     exec_path=$(unit_exec_path "$RUNNER_SERVICE")
     argv_line=$(unit_exec_argv "$RUNNER_SERVICE")
     workdir_prop=$(unit_prop "$RUNNER_SERVICE" WorkingDirectory)
-    workdir_prop=${workdir_prop%/}
+    workdir_prop=$(trim_slash "$workdir_prop")
     # Same lossy argv[] format as for the Forgejo unit, see there. A -c path
     # containing a space comes back truncated and is reported as unreadable.
     read -r -a argv <<<"$argv_line"
@@ -736,7 +789,7 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     RUNNER_HOME=/home/runner
     RUNNER_HOME_SRC=$dsrc
   fi
-  RUNNER_HOME=${RUNNER_HOME%/}
+  RUNNER_HOME=$(trim_slash "$RUNNER_HOME")
 
   if [[ -n $RUNNER_CONFIG ]]; then
     RUNNER_CONFIG_SRC="env"
@@ -750,8 +803,9 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     fi
   fi
   # A relative path in the unit is relative to the directory the daemon runs in.
+  # The %/ keeps a RUNNER_HOME of / from joining as "//".
   if [[ -n $RUNNER_CONFIG && $RUNNER_CONFIG != /* ]]; then
-    RUNNER_CONFIG=$RUNNER_HOME/$RUNNER_CONFIG
+    RUNNER_CONFIG=${RUNNER_HOME%/}/$RUNNER_CONFIG
   fi
 
   # The registration the runner already holds lives in this file; it survives a
@@ -769,12 +823,17 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     RUNNER_REG_FILE=$regfile
   else
     # Relative to the directory the daemon runs in, which is RUNNER_HOME.
-    RUNNER_REG_FILE=$RUNNER_HOME/$regfile
+    RUNNER_REG_FILE=${RUNNER_HOME%/}/$regfile
   fi
 
   if [[ $tolerant -eq 0 ]]; then
-    [[ -x $RUNNER_BIN ]] \
-      || die "no executable at $RUNNER_BIN (from: $RUNNER_BIN_SRC). This script upgrades an existing install; install forgejo-runner first (https://forgejo.org/docs/latest/admin/actions/installation/binary/), or set RUNNER_BIN to where it lives"
+    # Skipped for a rollback, and only this check: the binary a rollback is
+    # undoing may be missing or half-written, and what it needs is
+    # $RUNNER_BIN.prev, which rollback checks for itself.
+    if [[ $for_rollback -eq 0 ]]; then
+      [[ -x $RUNNER_BIN ]] \
+        || die "no executable at $RUNNER_BIN (from: $RUNNER_BIN_SRC). This script upgrades an existing install; install forgejo-runner first (https://forgejo.org/docs/latest/admin/actions/installation/binary/), or set RUNNER_BIN to where it lives"
+    fi
     if [[ -n $RUNNER_CONFIG && ! -r $RUNNER_CONFIG ]]; then
       warn "cannot read the runner config at $RUNNER_CONFIG (from: $RUNNER_CONFIG_SRC), so the registration file below is a guess. Set RUNNER_CONFIG if the daemon uses another file."
     fi
@@ -808,9 +867,11 @@ run_as() {  # $1 = user, rest = the command to run as that user
 
 as_forgejo() {  # run the Forgejo binary as its own user with the resolved settings
   # Forgejo wants its global flags before the subcommand: "forgejo --config X
-  # dump --file Y", not "forgejo dump --config X". The cd matters too: with no
-  # work path Forgejo falls back to the directory it was started in, and the
-  # current directory may be one FORGEJO_USER cannot even enter.
+  # dump --file Y", not "forgejo dump --config X". The cd is not about the work
+  # path - with none given Forgejo falls back to the directory holding the
+  # binary, not to the directory it was started in - it is there because
+  # run_as has to start in a directory FORGEJO_USER can enter, and the one this
+  # script was run from may not be.
   local -a cmd
   cmd=(env ${FORGEJO_ENV[@]+"${FORGEJO_ENV[@]}"} "$FORGEJO_BIN" --config "$FORGEJO_CONFIG")
   if [[ -n $FORGEJO_WORK_PATH ]]; then
@@ -1022,17 +1083,24 @@ upgrade_runner() {
 
 rollback() {
   need_root
-  local bin svc kind
+  local bin svc kind repo restore
   # Same reading of the unit and config as an upgrade does, so a rollback puts
-  # the binary back where this host really keeps it.
+  # the binary back where this host really keeps it. --rollback drops only the
+  # "there is an executable at BIN" check: a rollback is for undoing an upgrade
+  # that may have left no usable binary there at all.
   case "$1" in
-    forgejo) resolve_forgejo_settings
-             bin=$FORGEJO_BIN; svc=$FORGEJO_SERVICE; kind=forgejo ;;
-    runner)  resolve_runner_settings
-             bin=$RUNNER_BIN;  svc=$RUNNER_SERVICE;  kind=runner  ;;
+    forgejo) resolve_forgejo_settings --rollback
+             bin=$FORGEJO_BIN; svc=$FORGEJO_SERVICE; kind=forgejo
+             repo=$FORGEJO_REPO
+             restore="If the version you are undoing changed the database schema, restore the dump from $BACKUP_DIR as well, before starting the service" ;;
+    runner)  resolve_runner_settings --rollback
+             bin=$RUNNER_BIN;  svc=$RUNNER_SERVICE;  kind=runner
+             repo=$RUNNER_REPO
+             restore="There is no dump to restore for the runner, and its registration in $RUNNER_REG_FILE survives a binary swap" ;;
     *) die "rollback forgejo|runner" ;;
   esac
-  [[ -x $bin.prev ]] || die "no $bin.prev to roll back to"
+  [[ -x $bin.prev ]] \
+    || die "no previous binary at $bin.prev to roll back to, so nothing was changed and $svc was left exactly as it was. This script keeps the binary it replaced at that path only until the next upgrade overwrites it, so there is nothing older to go back to here. To go back by hand: download the release you want from $repo/releases, check its signature, and install it over $bin. $restore"
   log "Rolling back $bin to $("$bin.prev" --version)"
   # Tracked before the stop for the same reason as in the upgrades.
   STOPPED_SVC="$svc"

@@ -68,8 +68,15 @@ that every collaborator picks them up the same way.
     exit status ("is the key present") is used.
   - `fetch_and_verify`: `gpg --verify ... 2>/dev/null` — the status-fd
     `VALIDSIG` line is what is checked, not the human-readable output.
-  - `fetch_and_verify`: the optional `.sha256` fetch, `curl ... 2>/dev/null`
-    — it may 404 on older releases, tolerated with a warning.
+  - `fetch_sha256`: runs `curl` without `-f` and reads the HTTP status
+    itself; only a 404 is treated as "not published" and warned about, and
+    the upgrade continues on the GPG signature alone. A transport error or
+    any other status stops the upgrade. There is no `2>/dev/null` here.
+  - `resolve_*_settings --rollback`, used only by `rollback`: skips just
+    the "current binary must be executable" check, because a failed
+    install can leave `$BIN` truncated or missing and that is exactly when
+    `rollback` runs. Every other check, including that the unit exists,
+    still applies; `.prev` is what `rollback` actually needs.
   - `resolve_forgejo_settings`: `id -u "$FORGEJO_USER" >/dev/null 2>&1` —
     only the exit status ("does this user exist") is used; the message on
     failure is the script's own, not `id`'s.
@@ -209,8 +216,11 @@ and
   `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`, then `--work-path`, else the
   directory holding the binary; `WorkingDirectory=` is never a work-path
   source. `WORK_PATH` in `app.ini` is read only after the config file is
-  located, so it cannot move the config. Checked against the current
-  `forgejo` branch source.
+  located, so it cannot move the config — but once `app.ini` is read,
+  `WORK_PATH` there replaces the work path taken from `Environment=` or
+  `--work-path` for everything else. `cmd/web.go` only `log.Error`s about
+  the mismatch and keeps running, so the script follows `app.ini` too.
+  Checked against the current `forgejo` branch source.
 - **`LOCAL_ROOT_URL` is what Forgejo itself uses for local requests**, and
   its default depends on `PROTOCOL` — `http://unix/` for `http+unix`.
   Prefer it over reconstructing a URL from `HTTP_ADDR` and `HTTP_PORT` when
@@ -272,6 +282,12 @@ There is no Forgejo install on the development machine, so testing is split.
 - **Prove the negative half.** After a passing verification, append a byte to
   the downloaded file and confirm the same gpg check rejects it. A signature
   check that has only ever been seen passing guards nothing.
+- **`fetch_sha256`, tested alone as well as through `fetch_and_verify`.**
+  Call it directly against a real URL that 404s (an existing release path
+  with the filename changed) and confirm it returns 1 with no file left
+  behind; against an unresolvable host and confirm it dies with the
+  transport-error message; and against a URL or stub that answers some
+  other status and confirm it dies with the HTTP-status message.
 - **Version parsers, tested against real output.** Download the binary and
   feed its `--version` output to `installed_forgejo` / `installed_runner`, or
   stub the binary with a one-line script that echoes the real string.
@@ -293,7 +309,13 @@ There is no Forgejo install on the development machine, so testing is split.
   `systemctl show` formats (see "Documented install layout" above) for a
   fixed set of units, and run `forgejo-upgrade.sh settings` against that.
   Never point `resolve_forgejo_settings` or `resolve_runner_settings` at a
-  real unit on this machine; there isn't one.
+  real unit on this machine; there isn't one. A fake `app.ini` under
+  `tmp/etc/`, reachable through `FORGEJO_CONFIG`, is how the `WORK_PATH`
+  precedence and the `--rollback` resolution get exercised: point a stub
+  unit's env at it to check that `app.ini` wins over `Environment=`/
+  `--work-path` and warns on a mismatch, and call
+  `resolve_forgejo_settings --rollback` with `FORGEJO_BIN` pointed at a
+  missing file to confirm only the binary check is skipped.
 
 ## Review discipline
 
