@@ -27,21 +27,27 @@ A server upgrade runs these steps in order:
 3. Warn and ask for confirmation on a major version change.
 4. Import the Forgejo release key if it is not already in the root keyring.
 5. Download the binary and its detached signature, and verify that the
-   signature chains to the Forgejo release key. If the signature was made
-   with a subkey not yet in the local keyring, refresh only that pinned key
-   from the keyserver and check once more before giving up. Verify the
-   `.sha256` file too when one is published; only a 404 counts as "not
-   published" — any other download failure stops the upgrade.
+   signature chains to the Forgejo release key and is neither expired nor
+   made by a revoked key. If the signature was made with a subkey not yet
+   in the local keyring, refresh only that pinned key from the keyserver
+   and check once more before giving up. Any other failure — a bad
+   signature, an expired signature or key, a revoked key, or a signature
+   from a different key — stops the upgrade with a message naming what
+   gpg reported. Verify the `.sha256` file too when one is published; only
+   a 404 counts as "not published" — any other download failure stops the
+   upgrade.
 6. Confirm the downloaded binary reports the requested version.
 7. While the service is still up: if it is active, confirm it answers a
-   health check; if a backup will be taken, create `BACKUP_DIR` and confirm
-   the binary runs as `FORGEJO_USER`, and that this account can read the
-   config and write to `BACKUP_DIR`.
+   health check with HTTP 200; if a backup will be taken, create
+   `BACKUP_DIR` if it does not exist (an existing directory keeps its
+   owner and mode) and confirm the binary runs as `FORGEJO_USER`, and that
+   this account can read the config and write to `BACKUP_DIR`.
 8. Flush Forgejo's queues, then stop the service.
 9. Take a `forgejo dump` backup into `BACKUP_DIR`.
 10. Copy the old binary to `<name>.prev`, install the new one, keeping its
     owner, group, and mode.
-11. Start the service and poll `/api/healthz` for up to a minute.
+11. Start the service and poll `/api/healthz` for up to a minute, until it
+    answers HTTP 200.
 12. Run `forgejo doctor check --all`.
 
 Any failure once the service has been stopped — the health check timing out,
@@ -97,9 +103,9 @@ otherwise resolve it against two different directories.
 | --- | --- | --- |
 | `FORGEJO_SERVICE` | — | `forgejo` |
 | `FORGEJO_BIN` | `ExecStart=` program | `/usr/local/bin/forgejo` |
-| `FORGEJO_USER` | `User=` | `git` |
-| `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` (relative to `WorkingDirectory=`, or `/` if unset) | Forgejo's own default: `<work path>/custom/conf/app.ini`, work path from `Environment=` (`FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`) or `--work-path`, else the binary's directory; `custom` is assumed since `FORGEJO_CUSTOM`/`--custom-path` are not read; `/etc/forgejo/app.ini` only if the unit is not found |
-| `FORGEJO_WORK_PATH` | `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=`, then `--work-path`/`-w` in `ExecStart=`, then `WORK_PATH` in `app.ini`, which replaces the unit's value when set (Forgejo does the same); `WorkingDirectory=` is not consulted | unset; Forgejo then uses the directory holding the binary, with a warning |
+| `FORGEJO_USER` | `User=` | `root` for a loaded unit that sets no `User=` (systemd's default); `git` only when the unit is not found |
+| `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` (relative to `WorkingDirectory=`, or `/` if unset) | Forgejo's own default: `<work path>/custom/conf/app.ini`, work path from `--work-path` or `Environment=` (`FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`), else the binary's directory; `custom` is assumed since `FORGEJO_CUSTOM`/`--custom-path` are not read; `/etc/forgejo/app.ini` only if the unit is not found |
+| `FORGEJO_WORK_PATH` | `--work-path`/`-w` in `ExecStart=`, then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=` (the flag wins, as it does for Forgejo), then `WORK_PATH` in `app.ini`, which replaces the unit's value when set; `WorkingDirectory=` is not consulted | unset; Forgejo then uses the directory holding the binary, with a warning |
 | `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); with `http+unix` the URL is `http://unix` and curl dials `FORGEJO_SOCKET` | `http://127.0.0.1:3000` |
 | `FORGEJO_SOCKET` | `HTTP_ADDR` in `[server]` when `PROTOCOL` is `http+unix`, whatever `LOCAL_ROOT_URL` says, because that is the socket Forgejo itself dials | unset |
 | `BACKUP_DIR` | — | `/var/backups/forgejo` |
@@ -110,10 +116,15 @@ script makes. Those calls run as `FORGEJO_USER` — via `runuser`, falling
 back to `sudo` if `runuser` is not on `PATH` — from the resolved work path,
 with `--config` and `--work-path` given explicitly before the subcommand.
 
+A `FORGEJO_WORK_PATH` override must agree with `WORK_PATH` in `app.ini`
+when that is set. Forgejo follows `app.ini` and ignores `--work-path`, so
+a conflicting override could never take effect; the script refuses it
+before anything is stopped rather than claim in `settings` that it will.
+
 If `PROTOCOL` in `app.ini` is `https`, `fcgi`, or `fcgi+unix`, the script
 refuses to guess an address and dies before stopping anything, asking for
-`FORGEJO_URL` — a URL that answers `/api/healthz`, such as the reverse proxy
-in front of Forgejo.
+`FORGEJO_URL` — a URL that answers `/api/healthz` with HTTP 200, such as
+the reverse proxy in front of Forgejo.
 
 ### Runner settings
 

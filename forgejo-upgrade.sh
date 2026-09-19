@@ -222,17 +222,84 @@ gpg_valid_sig() {  # $1 = signature file, $2 = signed file -> 0 when RELEASE_KEY
   # cannot check at all - an unknown key gives NO_PUBKEY and a failure exit -
   # and that case is not an error yet: the caller reads the status lines and
   # refreshes the pinned key. Nothing here decides a signature is good; only
-  # the VALIDSIG match below does that.
+  # the two checks below do that, and both have to pass.
   GPG_STATUS=$(gpg --status-fd 1 --verify "$1" "$2" 2>/dev/null || true)
-  grep -Eq "^\[GNUPG:\] VALIDSIG .* $RELEASE_KEY$" <<<"$GPG_STATUS"
+  grep -Eq "^\[GNUPG:\] VALIDSIG .* $RELEASE_KEY$" <<<"$GPG_STATUS" || return 1
+  # VALIDSIG on its own says only that the signature is cryptographically
+  # valid. gpg prints it alongside EXPSIG (the signature itself has expired),
+  # EXPKEYSIG (the key that made it has since expired) and REVKEYSIG (that key
+  # was revoked) - see gnupg's doc/DETAILS - so a release could carry a
+  # VALIDSIG line for the pinned key and still be one of those three. None of
+  # them is good enough to install, so all three are refused here.
+  #
+  # KEYEXPIRED is deliberately not in that list. gpg prints a KEYEXPIRED line
+  # for every expired subkey it sees on the pinned primary key, and the
+  # current releases all have some - none of which signed this file. Treating
+  # KEYEXPIRED as a failure would reject every current release.
+  ! grep -Eq '^\[GNUPG:\] (EXPSIG|EXPKEYSIG|REVKEYSIG) ' <<<"$GPG_STATUS"
 }
 
-gpg_missing_key() {  # -> 0 when the last gpg_valid_sig failed for want of the key
-  # NO_PUBKEY is "the key is not in the keyring"; ERRSIG is gpg's more general
-  # "could not check this signature", which is what it prints for an unknown
-  # key when it cannot say more. Anything else - a bad signature above all - is
-  # not a missing key and must not lead to a retry.
-  grep -Eq '^\[GNUPG:\] (NO_PUBKEY|ERRSIG) ' <<<"$GPG_STATUS"
+gpg_verdict() {  # -> one word saying what gpg made of the last gpg_valid_sig
+  # Reads GPG_STATUS and prints one of: missing-key, bad-signature, expired,
+  # revoked, other-key, unverifiable.
+  #
+  # The order matters. gpg prints VALIDSIG together with EXPSIG, EXPKEYSIG and
+  # REVKEYSIG, so a status holding both has to be reported as expired or
+  # revoked - that is the reason the signature was refused - and not as a
+  # signature by some other key. NO_PUBKEY is "the key is not in the keyring";
+  # ERRSIG is gpg's more general "could not check this signature", which is
+  # what it prints for an unknown key when it cannot say more. Those two are
+  # the only verdict the caller retries.
+  if grep -Eq '^\[GNUPG:\] (NO_PUBKEY|ERRSIG) ' <<<"$GPG_STATUS"; then
+    printf 'missing-key\n'
+  elif grep -Eq '^\[GNUPG:\] BADSIG ' <<<"$GPG_STATUS"; then
+    printf 'bad-signature\n'
+  elif grep -Eq '^\[GNUPG:\] (EXPSIG|EXPKEYSIG) ' <<<"$GPG_STATUS"; then
+    printf 'expired\n'
+  elif grep -Eq '^\[GNUPG:\] REVKEYSIG ' <<<"$GPG_STATUS"; then
+    printf 'revoked\n'
+  elif grep -Eq '^\[GNUPG:\] VALIDSIG ' <<<"$GPG_STATUS" \
+       && ! grep -Eq "^\[GNUPG:\] VALIDSIG .* $RELEASE_KEY$" <<<"$GPG_STATUS"; then
+    printf 'other-key\n'
+  else
+    # Nothing recognizable, or a status this function is not asked about - a
+    # good signature by the pinned key lands here too, because the caller only
+    # ever asks after gpg_valid_sig has already said no.
+    printf 'unverifiable\n'
+  fi
+}
+
+gpg_status_line() {  # $1 = extended regex -> the first matching status line, empty when none
+  # Quoted back to the operator so the message names what gpg actually said.
+  # A status with no matching line is possible - an empty status, above all -
+  # and then nothing is printed rather than the whole thing failing.
+  grep -m1 -E "$1" <<<"$GPG_STATUS" || true
+}
+
+die_bad_signature() {  # $1 = asset filename, $2 = the verdict, $3 = when this happened ("" for the first try)
+  # One message shape for every way a signature can be refused: what was
+  # expected, what gpg reported, and what to do. Changing RELEASE_KEY is never
+  # the remedy - it is the fingerprint this script trusts, and a release that
+  # does not match it is the thing to question.
+  local f=$1 verdict=$2 when=$3 what line
+  case "$verdict" in
+    bad-signature)
+      what="the signature does not match the file, so the download is damaged or has been tampered with"
+      line=$(gpg_status_line '^\[GNUPG:\] BADSIG ') ;;
+    expired)
+      what="the signature or the key that made it has expired"
+      line=$(gpg_status_line '^\[GNUPG:\] (EXPSIG|EXPKEYSIG) ') ;;
+    revoked)
+      what="the key that made the signature has been revoked"
+      line=$(gpg_status_line '^\[GNUPG:\] REVKEYSIG ') ;;
+    other-key)
+      what="the file is signed by some other key"
+      line=$(gpg_status_line '^\[GNUPG:\] VALIDSIG ') ;;
+    *)
+      what="gpg could not check the signature at all"
+      line=$(gpg_status_line '^\[GNUPG:\] ') ;;
+  esac
+  die "signature on $f was refused$when: $what. Expected gpg to report a VALIDSIG line ending in $RELEASE_KEY - the Forgejo release key published at https://forgejo.org/download/ - with no expiry or revocation; gpg reported '$verdict'${line:+, status line: $line}. Do not install this file: check the release and the key fingerprint at https://forgejo.org/download/, and report a mismatch to Forgejo"
 }
 
 fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; dies otherwise
@@ -258,7 +325,7 @@ fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; 
 }
 
 fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
-  local base="$1/releases/download/v$3" f="$2"
+  local base="$1/releases/download/v$3" f="$2" verdict
   log "Downloading $f"
   curl -fL --progress-bar -o "$WORKDIR/$f"     "$base/$f"
   curl -fsSL            -o "$WORKDIR/$f.asc" "$base/$f.asc"
@@ -268,18 +335,24 @@ fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
     # A signature this keyring cannot check at all is the one case worth
     # retrying: Forgejo signs each release with a subkey of the pinned primary
     # key, and a subkey issued since the key was imported is not in the keyring
-    # yet. Anything else - a bad signature, a signature by another key - stops
-    # the upgrade here.
-    gpg_missing_key \
-      || die "signature on $f is not from $RELEASE_KEY. Expected gpg to report a VALIDSIG line ending in that fingerprint, the Forgejo release key published at https://forgejo.org/download/; it did not. Do not install this file: it is not signed by the key this script trusts"
-    log "signature is by a key not in the keyring; refreshing the pinned key $RELEASE_KEY from $KEYSERVER (the same fingerprint, nothing else)"
-    # Only the pinned fingerprint is ever fetched, so the trust root does not
-    # move: this can add a new subkey of the key already trusted, and nothing
-    # else.
-    gpg --keyserver "$KEYSERVER" --recv "$RELEASE_KEY" \
-      || die "could not refresh the key $RELEASE_KEY from $KEYSERVER; the signature on $f cannot be checked, so the download is not trusted and nothing was installed. Check this host's network access to the keyserver, or import the key by hand from https://forgejo.org/download/, then rerun"
-    gpg_valid_sig "$WORKDIR/$f.asc" "$WORKDIR/$f" \
-      || die "signature on $f is not from $RELEASE_KEY. The pinned key was refreshed from $KEYSERVER and the signature still does not verify against it, so this release is signed by something other than the Forgejo release key. Do not install it; check the fingerprint published at https://forgejo.org/download/ and report the mismatch"
+    # yet. Every other verdict - a bad signature, an expired or revoked key, a
+    # signature by another key - stops the upgrade here, saying which one it
+    # was.
+    verdict=$(gpg_verdict)
+    case "$verdict" in
+      missing-key)
+        log "signature is by a key not in the keyring; refreshing the pinned key $RELEASE_KEY from $KEYSERVER (the same fingerprint, nothing else)"
+        # Only the pinned fingerprint is ever fetched, so the trust root does
+        # not move: this can add a new subkey of the key already trusted, and
+        # nothing else.
+        gpg --keyserver "$KEYSERVER" --recv "$RELEASE_KEY" \
+          || die "could not refresh the key $RELEASE_KEY from $KEYSERVER; the signature on $f cannot be checked, so the download is not trusted and nothing was installed. Check this host's network access to the keyserver, or import the key by hand from https://forgejo.org/download/, then rerun"
+        # The refresh gave the keyring every chance; whatever gpg says now is
+        # final, and the verdict is read again because it may have changed.
+        gpg_valid_sig "$WORKDIR/$f.asc" "$WORKDIR/$f" \
+          || die_bad_signature "$f" "$(gpg_verdict)" " even after the pinned key was refreshed from $KEYSERVER" ;;
+      *) die_bad_signature "$f" "$verdict" "" ;;
+    esac
   fi
 
   # Older releases do not publish a .sha256 at all, which fetch_sha256 reports
@@ -383,6 +456,13 @@ ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $
   # Reads one value out of an ini file with sed, so the script still needs
   # nothing an operator would have to install. Good enough for the handful of
   # [server] keys the health check needs, not a general ini parser.
+  #
+  # Only the last match is kept, which is what Forgejo does with a key given
+  # twice: go-ini overwrites the earlier value, and Forgejo's load options do
+  # not turn shadowed keys on (modules/setting/config_provider.go,
+  # configProviderLoadOptions). "tail -n 1" rather than cutting the captured
+  # text up, because a last match with an empty value - "WORK_PATH =" - has to
+  # survive, and command substitution drops the empty line it prints.
   local file=$1 section=$2 key=$3 raw
   [[ -r $file ]] || return 0
   if [[ -n $section ]]; then
@@ -390,11 +470,12 @@ ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $
     # looking for the end pattern on the line after the start, so the header
     # itself does not close the range.
     raw=$(sed -n "/^[[:space:]]*\[[[:space:]]*${section}[[:space:]]*\]/I,/^[[:space:]]*\[/ \
-                  s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//Ip" "$file")
+                  s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//Ip" "$file" | tail -n 1)
   else
-    raw=$(sed -n "/^[[:space:]]*\[/q; s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//Ip" "$file")
+    raw=$(sed -n "/^[[:space:]]*\[/q; s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//Ip" "$file" | tail -n 1)
   fi
-  raw=${raw%%$'\n'*}   # first match wins, as it does for Forgejo itself
+  # An empty last value is "set to nothing", which Forgejo reads as unset
+  # (it tests configWorkPath != ""), so nothing is returned for it.
   [[ -n $raw ]] || return 0
   # Drop a trailing " ; comment" or " # comment", then trailing spaces and any
   # surrounding quotes.
@@ -612,39 +693,48 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   elif [[ -n $user_prop ]]; then
     FORGEJO_USER=$user_prop
     FORGEJO_USER_SRC="unit User"
+  elif [[ $loaded -eq 1 ]]; then
+    # systemd runs a system service whose unit sets no User= as root, so that
+    # is the account this install's Forgejo actually runs as, and the backup
+    # and doctor runs have to match it. git is the documented install's
+    # account, which is only a safe guess when there is no unit to read.
+    FORGEJO_USER=root
+    FORGEJO_USER_SRC="systemd default; unit sets no User"
   else
     FORGEJO_USER=git
     FORGEJO_USER_SRC=$dsrc
   fi
 
   # The work path is settled before the config, because Forgejo's own default
-  # config path sits under the work path. Forgejo's own order
-  # (modules/setting/path.go, InitWorkPathAndCfgProvider) is: FORGEJO_WORK_DIR
-  # in the environment (GITEA_WORK_DIR on older installs), then --work-path,
-  # else the directory holding the binary. Then, once the config file has been
-  # read, WORK_PATH in app.ini replaces whatever those gave - which is why the
-  # block further down, after the config path is known, can still change the
-  # answer. The unit's WorkingDirectory= is never one of Forgejo's sources;
-  # systemd only uses it to pick the directory the process starts in, so this
-  # script does not read a work path out of it either.
+  # config path sits under the work path. Forgejo reads the environment first
+  # and the command line second, and the flag's Set wins
+  # (modules/setting/path.go: readFromEnv() then readFromArgs()), so
+  # --work-path is the higher source and is read first here; FORGEJO_WORK_DIR
+  # in the environment beats the older GITEA_WORK_DIR; with none of them set,
+  # Forgejo uses the directory holding the binary. Then, once the config file
+  # has been read, WORK_PATH in app.ini replaces whatever those gave - which is
+  # why the block further down, after the config path is known, can still
+  # change the answer. The unit's WorkingDirectory= is never one of Forgejo's
+  # sources; systemd only uses it to pick the directory the process starts in,
+  # so this script does not read a work path out of it either.
   if [[ -n $FORGEJO_WORK_PATH ]]; then
     FORGEJO_WORK_PATH_SRC="env"
     require_abs FORGEJO_WORK_PATH "$FORGEJO_WORK_PATH" "$tolerant"
   else
-    wp=$(forgejo_env_value FORGEJO_WORK_DIR)
+    wp=$(argv_opt --work-path -w -- ${argv[@]+"${argv[@]}"})
     if [[ -n $wp ]]; then
       FORGEJO_WORK_PATH=$wp
-      FORGEJO_WORK_PATH_SRC="unit Environment FORGEJO_WORK_DIR"
+      FORGEJO_WORK_PATH_SRC="unit ExecStart --work-path"
     else
-      wp=$(forgejo_env_value GITEA_WORK_DIR)
+      wp=$(forgejo_env_value FORGEJO_WORK_DIR)
       if [[ -n $wp ]]; then
         FORGEJO_WORK_PATH=$wp
-        FORGEJO_WORK_PATH_SRC="unit Environment GITEA_WORK_DIR"
+        FORGEJO_WORK_PATH_SRC="unit Environment FORGEJO_WORK_DIR"
       else
-        wp=$(argv_opt --work-path -w -- ${argv[@]+"${argv[@]}"})
+        wp=$(forgejo_env_value GITEA_WORK_DIR)
         if [[ -n $wp ]]; then
           FORGEJO_WORK_PATH=$wp
-          FORGEJO_WORK_PATH_SRC="unit ExecStart --work-path"
+          FORGEJO_WORK_PATH_SRC="unit Environment GITEA_WORK_DIR"
         fi
       fi
     fi
@@ -709,24 +799,36 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
 
   # Forgejo's last word on the work path: WORK_PATH in app.ini, which sits in
   # the keys before the first [section]. Forgejo reads it once the config file
-  # has been found and it replaces the value the environment or --work-path
-  # gave, so it replaces the one found above too. The operator's own
-  # FORGEJO_WORK_PATH is the one thing it does not override; an env var set on
-  # the command line wins over every source in this script.
-  if [[ $FORGEJO_WORK_PATH_SRC != env ]]; then
-    wp=$(trim_slash "$(ini_get "$FORGEJO_CONFIG" "" WORK_PATH)")
-    if [[ -n $wp ]]; then
-      if [[ -n $FORGEJO_WORK_PATH && $wp != "$FORGEJO_WORK_PATH" ]]; then
-        wp_clash="app.ini sets WORK_PATH = $wp but the unit gives $FORGEJO_WORK_PATH (from: $FORGEJO_WORK_PATH_SRC); Forgejo uses the app.ini value and logs an error about the mismatch on every start, so this script uses $wp too. Remove the outdated value from the unit to silence it"
+  # has been found, and it replaces the value --work-path or the environment
+  # gave. It is read here whatever the work path found above came from,
+  # because it decides what Forgejo itself will use either way.
+  wp=$(trim_slash "$(ini_get "$FORGEJO_CONFIG" "" WORK_PATH)")
+  if [[ $FORGEJO_WORK_PATH_SRC == env ]]; then
+    # An operator override is passed to the CLI as --work-path, and app.ini
+    # overrules that flag, so an override that disagrees with app.ini cannot
+    # take effect: the dump and the doctor run would quietly use the app.ini
+    # value instead of the one asked for. Better to stop and say so than to
+    # print one path and use another. The same value in both is no conflict.
+    if [[ -n $wp && $wp != "$FORGEJO_WORK_PATH" ]]; then
+      local wp_conflict="FORGEJO_WORK_PATH=$FORGEJO_WORK_PATH but $FORGEJO_CONFIG sets WORK_PATH = $wp. Forgejo follows WORK_PATH in app.ini and ignores --work-path, so this override cannot take effect and the dump and doctor runs would use $wp; either unset FORGEJO_WORK_PATH or change WORK_PATH in app.ini"
+      if [[ $tolerant -eq 0 ]]; then
+        die "$wp_conflict"
+      else
+        # Held back like the clash below, so the settings block is read first.
+        wp_clash="$wp_conflict"
       fi
-      FORGEJO_WORK_PATH=$wp
-      FORGEJO_WORK_PATH_SRC="app.ini WORK_PATH"
-    elif [[ -z $FORGEJO_WORK_PATH ]]; then
-      # Nothing anywhere set one, so Forgejo will use the directory holding the
-      # binary and this script leaves --work-path off; the warning at the end
-      # of the block says so.
-      FORGEJO_WORK_PATH_SRC="not set"
     fi
+  elif [[ -n $wp ]]; then
+    if [[ -n $FORGEJO_WORK_PATH && $wp != "$FORGEJO_WORK_PATH" ]]; then
+      wp_clash="app.ini sets WORK_PATH = $wp but the unit gives $FORGEJO_WORK_PATH (from: $FORGEJO_WORK_PATH_SRC); Forgejo uses the app.ini value and logs an error about the mismatch on every start, so this script uses $wp too. Remove the outdated value from the unit to silence it"
+    fi
+    FORGEJO_WORK_PATH=$wp
+    FORGEJO_WORK_PATH_SRC="app.ini WORK_PATH"
+  elif [[ -z $FORGEJO_WORK_PATH ]]; then
+    # Nothing anywhere set one, so Forgejo will use the directory holding the
+    # binary and this script leaves --work-path off; the warning at the end
+    # of the block says so.
+    FORGEJO_WORK_PATH_SRC="not set"
   fi
 
   # The socket comes first and on its own, so that it is found whether the
@@ -951,6 +1053,12 @@ as_forgejo() {  # run the Forgejo binary as its own user with the resolved setti
   # binary, not to the directory it was started in - it is there because
   # run_as has to start in a directory FORGEJO_USER can enter, and the one this
   # script was run from may not be.
+  #
+  # Both the unit's Environment= and --work-path are passed. Forgejo lets the
+  # flag beat the environment, and then app.ini's WORK_PATH beat both, which is
+  # the same order resolve_forgejo_settings followed, so the work path the CLI
+  # ends up using is the one the settings block printed - and the same one the
+  # daemon uses.
   local -a cmd
   cmd=(env ${FORGEJO_ENV[@]+"${FORGEJO_ENV[@]}"} "$FORGEJO_BIN" --config "$FORGEJO_CONFIG")
   if [[ -n $FORGEJO_WORK_PATH ]]; then
@@ -962,14 +1070,21 @@ as_forgejo() {  # run the Forgejo binary as its own user with the resolved setti
 
 # --- health checks -----------------------------------------------------------
 
-healthz() {  # $1 = seconds to allow this one attempt (default 5) -> 0 when the server answers
-  # Connection refused is expected while the service is still starting, so only
-  # the exit status is used and curl's own message is dropped.
-  local -a opts=(-fs --max-time "${1:-5}")
+healthz() {  # $1 = seconds to allow this one attempt (default 5) -> 0 when the server answers 200
+  # Nothing but a 200 counts as healthy. This used to ask curl with -f, which
+  # also passes any 3xx: a reverse proxy in front of a stopped Forgejo answers
+  # 302 to a login page, and the upgrade would have been reported as healthy
+  # with the server down. So the status code is read instead and compared.
+  # Connection refused and a timeout are still expected while the service is
+  # starting, and curl's own message is dropped for them; curl failing then
+  # makes this function fail, as before.
+  local code
+  local -a opts=(-s -o /dev/null -w '%{http_code}' --max-time "${1:-5}")
   if [[ -n $FORGEJO_SOCKET ]]; then
     opts+=(--unix-socket "$FORGEJO_SOCKET")
   fi
-  curl "${opts[@]}" "$FORGEJO_URL/api/healthz" >/dev/null 2>&1
+  code=$(curl "${opts[@]}" "$FORGEJO_URL/api/healthz" 2>/dev/null) || return 1
+  [[ $code == 200 ]]
 }
 
 wait_forgejo_healthy() {
@@ -1053,7 +1168,13 @@ upgrade_forgejo() {
     # the same work either way, and a failure here costs no downtime.
     # The group is the account's primary group, not a group named after the
     # account: a service user called forgejo may well belong to group git.
-    install -d -o "$FORGEJO_USER" -g "$(id -gn "$FORGEJO_USER")" -m 750 "$BACKUP_DIR"
+    # Only when it is not already there: an existing directory may be centrally
+    # managed backup storage, whose owner and mode are somebody's decision and
+    # must not be rewritten by an upgrade. Whether it is usable as it stands is
+    # settled by the "test -w" run as FORGEJO_USER a few lines below.
+    if [[ ! -d $BACKUP_DIR ]]; then
+      install -d -o "$FORGEJO_USER" -g "$(id -gn "$FORGEJO_USER")" -m 750 "$BACKUP_DIR"
+    fi
     # What the three checks below prove: the binary starts as FORGEJO_USER with
     # the unit's Environment, and that account can read the config and write
     # the dump where the dump is going. What they do not prove: that app.ini

@@ -74,8 +74,18 @@ that every collaborator picks them up the same way.
   - `gpg_valid_sig`: `gpg --verify ... 2>/dev/null || true` — the exit
     status is ignored on purpose, because gpg exits non-zero on
     `NO_PUBKEY`; the status-fd lines are what is judged instead
-    (`VALIDSIG` for the pinned key, `NO_PUBKEY`/`ERRSIG` for "refresh the
-    key and retry"). The human-readable stderr stays suppressed.
+    (`VALIDSIG` for the pinned key, and none of `EXPSIG`, `EXPKEYSIG`, or
+    `REVKEYSIG` present — gpg emits one of those three alongside
+    `VALIDSIG` for a signature that is valid but expired, or made by an
+    expired or revoked key). `gpg_verdict` reads the same status lines to
+    classify a failure — missing key, bad signature, expired, revoked, a
+    different key, or unverifiable — for the message `fetch_and_verify`
+    prints. The human-readable stderr stays suppressed.
+  - `gpg_status_line`: `grep -m1 -E "$1" <<<"$GPG_STATUS" || true` — quotes
+    the first matching status line back to the operator in the failure
+    message; a status with no matching line at all is a normal case (for
+    example, an empty status above all) and must print nothing rather
+    than fail the message itself.
   - `fetch_sha256`: runs `curl` without `-f` and reads the HTTP status
     itself; only a 404 is treated as "not published" and warned about, and
     the upgrade continues on the GPG signature alone. A transport error or
@@ -91,8 +101,11 @@ that every collaborator picks them up the same way.
   - `run_as`: `command -v runuser >/dev/null` and
     `command -v sudo >/dev/null` — only "is it on `PATH`" is checked, not
     any output.
-  - `healthz`: `curl ... >/dev/null 2>&1` — connection refused is expected
-    while the service is still starting. Each attempt is capped with
+  - `healthz`: `curl -o /dev/null -w '%{http_code}' ... 2>/dev/null` — the
+    response body is discarded and stderr is dropped; only the printed
+    status code is read, and it must be exactly `200`. A connection
+    refused, expected while the service is still starting, and any other
+    code are both just "not healthy yet". Each attempt is capped with
     `--max-time`, and `wait_forgejo_healthy` runs against a clock, not a
     count, so the documented one-minute limit is real.
   - `die_unknown_unit`: `systemctl list-units ... || candidates=""` — the
@@ -145,6 +158,24 @@ re-checking against a current release.
   primary key fingerprint last. The check matches the primary fingerprint at
   the end of the line, so subkey rotation does not break it. Matching the
   primary fingerprint right after `VALIDSIG` fails on every release.
+  `VALIDSIG` by itself only means the signature is cryptographically
+  valid: gpg prints it together with `EXPSIG`, `EXPKEYSIG`, or `REVKEYSIG`
+  for a signature that is valid but expired, or made by an expired or
+  revoked key, so the check also rejects those three records. `KEYEXPIRED`
+  lines are different — every current release's status carries them for
+  older, unrelated subkeys — and must not be treated as a failure.
+- **A duplicated key in `app.ini` uses the last assignment, not the
+  first.** go-ini's `Section.NewKey` overwrites the value on a repeated
+  key, and Forgejo's `configProviderLoadOptions()`
+  (`modules/setting/config_provider.go`) never sets `AllowShadows`, so
+  duplicates are not accumulated, just replaced. `ini_get` matches this:
+  it returns the last assignment for a key, and treats an empty last
+  value as unset, the same as upstream's `if configWorkPath != ""` check.
+- **A health check must require exactly HTTP 200.** `curl -f` treats any
+  2xx or 3xx response as success, and a reverse proxy in front of Forgejo
+  can answer a redirect to a login page — HTTP 302, say — while Forgejo
+  itself is down. `healthz` reads only the status code and accepts `200`
+  alone.
 - **The primary key fingerprint is
   `EB114F5E6C0DC2BCDD183550A4B61A2DC5923710`** per
   <https://forgejo.org/download/>. The same key signs the runner.
@@ -184,7 +215,11 @@ and
 <https://code.forgejo.org/forgejo/runner/raw/branch/main/contrib/forgejo-runner.service>.
 
 - **Server unit:** `User=git`, binary at `/usr/local/bin/forgejo`, config at
-  `/etc/forgejo/app.ini`, `WorkingDirectory=/var/lib/forgejo`.
+  `/etc/forgejo/app.ini`, `WorkingDirectory=/var/lib/forgejo`. A unit that
+  sets no `User=` at all runs as root (systemd's own default for a system
+  service), so the script resolves `FORGEJO_USER` to `root` for a loaded
+  unit that omits it, and falls back to `git` only when the unit is not
+  found at all.
 - **Runner unit:** `User=runner`, `WorkingDirectory=/home/runner`,
   `ExecStart=... daemon -c /home/runner/runner-config.yml`, so the `.runner`
   registration file lives in `/home/runner`. `TimeoutStopSec=infinity` — the
@@ -232,15 +267,21 @@ and
   `InitWorkPathAndCfgProvider`, a relative path is passed through
   `filepath.Abs`, which resolves it there: the unit's `WorkingDirectory=`,
   or `/` when that is unset. With no `--config` at all, the file is
-  `<work path>/custom/conf/app.ini`, where the work path is
-  `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`, then `--work-path`, else the
-  directory holding the binary; `WorkingDirectory=` is never a work-path
-  source. `WORK_PATH` in `app.ini` is read only after the config file is
-  located, so it cannot move the config — but once `app.ini` is read,
-  `WORK_PATH` there replaces the work path taken from `Environment=` or
-  `--work-path` for everything else. `cmd/web.go` only `log.Error`s about
-  the mismatch and keeps running, so the script follows `app.ini` too.
-  Checked against the current `forgejo` branch source.
+  `<work path>/custom/conf/app.ini`, where the work path is `--work-path`,
+  then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`, else the directory holding the
+  binary — `readFromEnv()` runs first, `readFromArgs()` runs after, and
+  the flag's own `Set` call overwrites the environment value it finds
+  already there, so the flag wins; `WorkingDirectory=` is never a
+  work-path source. `WORK_PATH` in `app.ini` is read only after the
+  config file is located, so it cannot move the config — but once
+  `app.ini` is read, `WORK_PATH` there replaces the work path taken from
+  `Environment=` or `--work-path` for everything else. This also means an
+  operator-supplied `--work-path` can never override a `WORK_PATH` already
+  set in `app.ini`, which is why the script refuses a `FORGEJO_WORK_PATH`
+  that conflicts with `app.ini` rather than pretend the override took
+  effect. `cmd/web.go` only `log.Error`s about the mismatch and keeps
+  running, so the script follows `app.ini` too. Checked against the
+  current `forgejo` branch source.
 - **`LOCAL_ROOT_URL` is what Forgejo itself uses for local requests**, and
   its default depends on `PROTOCOL` — `http://unix/` for `http+unix`.
   Prefer it over reconstructing a URL from `HTTP_ADDR` and `HTTP_PORT` when
@@ -318,6 +359,21 @@ There is no Forgejo install on the development machine, so testing is split.
   key", the key gets imported, and the second attempt passes. Then, in
   that same empty `GNUPGHOME`, point `KEYSERVER` at an unresolvable host
   and confirm it dies on the signature error instead of passing.
+- **`gpg_verdict`, tested with synthetic status text.** Feed hand-written
+  `GPG_STATUS` strings straight to `gpg_verdict`, without running gpg: a
+  `VALIDSIG` plus `EXPKEYSIG` (or `EXPSIG`) must print `expired`, a
+  `VALIDSIG` plus `REVKEYSIG` must print `revoked`, a `VALIDSIG` ending in
+  a different fingerprint must print `other-key`, `BADSIG` must print
+  `bad-signature`, `NO_PUBKEY` or `ERRSIG` must print `missing-key`, and
+  an empty string must print `unverifiable`. For the expired and revoked
+  cases, `gpg_valid_sig`'s own predicate must still fail even though
+  `VALIDSIG` is present. The real release's status from the test above,
+  with its `KEYEXPIRED` lines for older subkeys, must still pass
+  `gpg_valid_sig`, since `KEYEXPIRED` is not one of the rejected records.
+- **`ini_get`, tested against a temp ini file.** A key assigned twice must
+  return the last value; a third assignment left empty must return
+  nothing, the same as unset; and a key that exists only in another
+  section must not be returned for the section being queried.
 - **Version parsers, tested against real output.** Download the binary and
   feed its `--version` output to `installed_forgejo` / `installed_runner`, or
   stub the binary with a one-line script that echoes the real string.
@@ -350,7 +406,19 @@ There is no Forgejo install on the development machine, so testing is split.
   resolves to `/`; an unknown unit still falls back to `/home/runner`. A
   relative operator override (for example `FORGEJO_CONFIG=tmp/etc/app.ini`,
   `BACKUP_DIR=backups`, or `RUNNER_HOME=runner`) must make `settings` warn
-  and every other invocation die with the relative-path message.
+  and every other invocation die with the relative-path message. Add a
+  stub Forgejo unit with no `User=` and confirm `FORGEJO_USER` resolves to
+  `root`; an unknown unit still resolves to `git`. Add a stub unit whose
+  `Environment=` sets `FORGEJO_WORK_DIR` to one directory while its
+  `ExecStart=` also carries `--work-path` pointing at another, and confirm
+  `FORGEJO_WORK_PATH` resolves to the flag's value. Set `FORGEJO_WORK_PATH`
+  in the environment to a path that conflicts with `WORK_PATH` in the stub
+  `app.ini` and confirm `settings` only warns while `forgejo` and
+  `rollback forgejo` die on the conflict; an equal value passes silently.
+- **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
+  on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
+  fails; swap in one that prints `200` and confirm it passes. This needs
+  no new dependency such as a local HTTP server.
 - **`rollback_needs_manual_start`, exercised directly from the sourced
   definitions**, since `rollback` itself is never run on this machine. It
   is `[[ $1 == forgejo && -n $2 && ${2%%.*} != "${3%%.*}" ]]`: exit status
