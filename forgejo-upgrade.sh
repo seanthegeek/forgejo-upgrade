@@ -17,6 +17,7 @@
 #   FORGEJO_WORK_PATH  unset; Forgejo then uses the directory holding the binary
 #   FORGEJO_URL        http://127.0.0.1:3000   (used for the health check)
 #   FORGEJO_SOCKET     unset; read from HTTP_ADDR when PROTOCOL is http+unix
+#   FORGEJO_DB_TYPE    unset; read from [database] DB_TYPE in app.ini
 #   BACKUP_DIR         /var/backups/forgejo    (must be writable by FORGEJO_USER)
 #   SKIP_BACKUP        set to 1 to skip `forgejo dump`
 #   RUNNER_SERVICE     forgejo-runner
@@ -51,6 +52,11 @@ FORGEJO_URL=${FORGEJO_URL:-}
 # HTTP_ADDR holds the socket path when PROTOCOL is http+unix, unless the
 # operator sets it here.
 FORGEJO_SOCKET=${FORGEJO_SOCKET:-}
+# Which database Forgejo keeps its data in: sqlite3, postgres, mysql, mssql.
+# Read from [database] DB_TYPE in app.ini unless the operator sets it here. It
+# decides what a `forgejo dump` zip is actually worth as a backup, which the
+# messages before the stop and around a rollback have to say plainly.
+FORGEJO_DB_TYPE=${FORGEJO_DB_TYPE:-}
 # The unit's Environment= settings, passed to the binary when the script runs
 # it as FORGEJO_USER. Filled in by resolve_forgejo_settings.
 FORGEJO_ENV=()
@@ -76,9 +82,18 @@ RUNNER_REG_FILE=""
 FORGEJO_SERVICE_SRC=""
 FORGEJO_BIN_SRC=""; FORGEJO_USER_SRC=""; FORGEJO_CONFIG_SRC=""
 FORGEJO_WORK_PATH_SRC=""; FORGEJO_URL_SRC=""; FORGEJO_SOCKET_SRC=""
+FORGEJO_DB_TYPE_SRC=""
 RUNNER_SERVICE_SRC=""
 RUNNER_BIN_SRC=""; RUNNER_HOME_SRC=""; RUNNER_CONFIG_SRC=""
 RUNNER_REG_FILE_SRC=""
+
+# Whether each component is installed on this host at all, as the resolvers
+# work out: 1 = it is here, 0 = nothing found. Neither is assumed, because a
+# runner often runs on a machine of its own and a Forgejo host often has no
+# runner. The read-only commands say "not installed" instead of describing an
+# install that is not there.
+FORGEJO_PRESENT=1
+RUNNER_PRESENT=1
 
 RELEASE_KEY=EB114F5E6C0DC2BCDD183550A4B61A2DC5923710
 KEYSERVER=hkps://keys.openpgp.org
@@ -86,6 +101,14 @@ FORGEJO_REPO=https://code.forgejo.org/forgejo/forgejo
 RUNNER_REPO=https://code.forgejo.org/forgejo/runner
 
 WORKDIR=$(mktemp -d /tmp/forgejo-upgrade.XXXXXX)
+
+# Only one upgrade at a time on this host, held by acquire_lock and released
+# by on_exit. /run is a root-only tmpfs that is cleared at boot, so a lock left
+# behind by a machine that crashed mid-upgrade does not survive the reboot, and
+# mkdir either creates the directory or fails in one step, so the lock needs no
+# new dependency.
+LOCK_DIR=/run/forgejo-upgrade.lock
+LOCK_HELD=0
 
 # log/warn go to stderr so command substitution captures only returned values
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
@@ -123,11 +146,21 @@ on_exit() {
          warn "read the journal above, then start the service with: systemctl start $STOPPED_SVC"
          # on_exit cannot tell for certain that this is the server rather than
          # the runner, so the remedy is offered against what the journal says.
-         warn "if the journal says the database is for a newer Forgejo, restore the dump from $BACKUP_DIR first (https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore), then start" ;;
+         # FORGEJO_DB_TYPE is whatever the resolver found earlier in this
+         # run; when it found nothing, restore_hint uses the cautious
+         # wording, which covers an unknown database as well as an external
+         # one.
+         warn "if the journal says the database is for a newer Forgejo, the data has to go back before that start (see https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore): $(restore_hint)" ;;
       *) warn "the binary was not changed. Start the service again with: systemctl start $STOPPED_SVC" ;;
     esac
   fi
   rm -rf "$WORKDIR" || warn "could not remove the temporary directory $WORKDIR; delete it by hand"
+  # Released last, and only by the run that took it, so a second run that
+  # stopped at the lock never clears the lock of the run still working. A
+  # cleanup failure must not replace the real exit status, so it only warns.
+  if [[ $LOCK_HELD -eq 1 ]]; then
+    rm -rf "$LOCK_DIR" || warn "could not remove the lock $LOCK_DIR; remove it by hand before the next run"
+  fi
   exit "$rc"
 }
 trap on_exit EXIT
@@ -137,6 +170,39 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 need_root() { [[ $EUID -eq 0 ]] || die "run as root (sudo)"; }
+
+# Taken by every command that changes a binary: forgejo, runner, and rollback.
+# check and settings only read, so they never lock.
+acquire_lock() {
+  local pid="" state
+  # mkdir on a directory that already exists fails, and that failure is the
+  # whole signal: another run got here first. Its own message would just
+  # repeat the path, so it is dropped in favour of the one below, which says
+  # who holds the lock and what to do.
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    if [[ -r $LOCK_DIR/pid ]]; then
+      # A file with no final newline makes read return non-zero although it
+      # has filled pid in, and an empty file leaves pid empty; both cases are
+      # covered by the wording below, so the exit status is not what is read
+      # here.
+      if ! read -r pid < "$LOCK_DIR/pid"; then :; fi
+    fi
+    if [[ -n $pid ]]; then
+      # Only the exit status is used: can that process still be signalled,
+      # that is, is it still alive. Nothing is actually sent to it.
+      if kill -0 "$pid" 2>/dev/null; then
+        state="pid $pid, still running"
+      else
+        state="pid $pid, no longer running"
+      fi
+    else
+      state="no pid recorded"
+    fi
+    die "another forgejo-upgrade run holds the lock $LOCK_DIR ($state). Two runs at once could overwrite the .prev copy that a rollback needs. Wait for it to finish; if that process is gone, remove the stale lock with: rm -r $LOCK_DIR, then rerun"
+  fi
+  printf '%s\n' "$$" > "$LOCK_DIR/pid"
+  LOCK_HELD=1
+}
 
 arch() {
   case "$(uname -m)" in
@@ -629,6 +695,11 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # A disagreement between app.ini and the unit over the work path, held back
   # so it prints after the settings block rather than before it.
   local wp_clash=""
+  # The "systemd does not know that unit" complaint, held back until the
+  # binary has been resolved: if nothing else points at an install either,
+  # there is no install here to complain about and a plainer line is printed
+  # instead.
+  local unit_warn=""
   local -a argv=()
 
   if [[ -z $FORGEJO_SERVICE ]]; then
@@ -645,9 +716,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   if unit_loaded "$FORGEJO_SERVICE"; then
     loaded=1
   elif [[ $tolerant -eq 1 ]]; then
-    if [[ $quiet -eq 0 ]]; then
-      warn "systemd does not know a unit called $unit, so the values below are defaults rather than what this host runs. Set FORGEJO_SERVICE to the unit that runs Forgejo."
-    fi
+    unit_warn="systemd does not know a unit called $unit, so the values below are defaults rather than what this host runs. Set FORGEJO_SERVICE to the unit that runs Forgejo."
     dsrc="default; $unit not found"
   else
     die_unknown_unit "$unit" FORGEJO_SERVICE gitea
@@ -686,6 +755,26 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   else
     FORGEJO_BIN=/usr/local/bin/forgejo
     FORGEJO_BIN_SRC=$dsrc
+  fi
+
+  # Is Forgejo on this host at all? It is if systemd knows the unit, or the
+  # binary is really there, or the operator set FORGEJO_SERVICE or
+  # FORGEJO_BIN - naming either one is the operator saying the install is
+  # here, so the unit warning above is what they need, not a "not installed"
+  # line. With none of the three, there is nothing here to describe: say so
+  # once and stop, rather than print a block of defaults for an install that
+  # does not exist and warn about paths inside it. Only a --tolerant caller
+  # reaches this with no unit; the others died on the unknown unit above.
+  if [[ $loaded -eq 0 && ! -x $FORGEJO_BIN \
+        && $FORGEJO_SERVICE_SRC != env && $FORGEJO_BIN_SRC != env ]]; then
+    FORGEJO_PRESENT=0
+    if [[ $quiet -eq 0 ]]; then
+      log "Forgejo: not installed on this host (no $unit and no $FORGEJO_BIN). If it is installed under another name, set FORGEJO_SERVICE or FORGEJO_BIN."
+    fi
+    return 0
+  fi
+  if [[ -n $unit_warn && $quiet -eq 0 ]]; then
+    warn "$unit_warn"
   fi
 
   if [[ -n $FORGEJO_USER ]]; then
@@ -850,6 +939,22 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # So that "$FORGEJO_URL/api/healthz" never doubles the slash.
   FORGEJO_URL=${FORGEJO_URL%/}
 
+  # Which database is behind this install. Not a path, so require_abs does not
+  # apply. When the config cannot be read the type stays empty, which
+  # db_is_external treats as "assume the cautious case".
+  if [[ -n $FORGEJO_DB_TYPE ]]; then
+    FORGEJO_DB_TYPE_SRC="env"
+  elif [[ -r $FORGEJO_CONFIG ]]; then
+    FORGEJO_DB_TYPE=$(ini_get "$FORGEJO_CONFIG" database DB_TYPE)
+    if [[ -n $FORGEJO_DB_TYPE ]]; then
+      FORGEJO_DB_TYPE_SRC="app.ini [database] DB_TYPE"
+    else
+      FORGEJO_DB_TYPE_SRC="unknown; no DB_TYPE in $FORGEJO_CONFIG"
+    fi
+  else
+    FORGEJO_DB_TYPE_SRC="unknown; cannot read $FORGEJO_CONFIG"
+  fi
+
   # Everything an upgrade depends on is checked here, while the service is
   # still untouched, so a wrong path cannot surface with Forgejo stopped.
   if [[ $tolerant -eq 0 ]]; then
@@ -882,6 +987,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     if [[ -n $FORGEJO_SOCKET_SRC ]]; then
       setting_line FORGEJO_SOCKET  "${FORGEJO_SOCKET:-(none)}"     "$FORGEJO_SOCKET_SRC"
     fi
+    setting_line FORGEJO_DB_TYPE   "${FORGEJO_DB_TYPE:-(unknown)}" "$FORGEJO_DB_TYPE_SRC"
     setting_line BACKUP_DIR        "$BACKUP_DIR"                   "$BACKUP_DIR_SRC"
     setting_line SKIP_BACKUP       "$SKIP_BACKUP"                  "$SKIP_BACKUP_SRC"
   fi
@@ -892,6 +998,39 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
   if [[ -z $FORGEJO_WORK_PATH && $quiet -eq 0 ]]; then
     warn "no work path found in the unit or in $FORGEJO_CONFIG; Forgejo will fall back to the directory holding $FORGEJO_BIN. If that is not where its data lives, set FORGEJO_WORK_PATH."
+  fi
+}
+
+# --- what the backup is worth ------------------------------------------------
+
+# Only SQLite's database file travels inside the zip that `forgejo dump`
+# writes; for every other database the zip carries an SQL dump instead, and
+# anything other than sqlite3 - including a type this script could not read -
+# is therefore treated as external, because that SQL is not a safe restore
+# (Forgejo's upgrade guide, Backup section:
+# https://forgejo.org/docs/latest/admin/upgrade/#backup).
+db_is_external() { [[ $FORGEJO_DB_TYPE != sqlite3 ]]; }
+
+# Said before anything is stopped, while the operator can still call the
+# upgrade off and take a database dump of their own. It is its own function so
+# that the wording can be read back from a sourced copy of these definitions,
+# on a machine with no root and no Forgejo.
+backup_note() {
+  if db_is_external; then
+    warn "the database is ${FORGEJO_DB_TYPE:-of unknown type}. The SQL that forgejo dump puts in the zip is not a reliable restore for it (Forgejo's upgrade guide, https://forgejo.org/docs/latest/admin/upgrade/#backup, calls its bugs serious and long standing), so the zip backs up repositories, attachments and the custom directory but not the database. Taking a native dump (pg_dump, mysqldump) is your job; this script does not run one"
+  else
+    log "the database is SQLite, so the dump zip in $BACKUP_DIR will contain the database file itself and is a complete backup"
+  fi
+}
+
+# The one sentence that every "put the data back" message is built around, so
+# the rollback paths and on_exit cannot drift apart. Printed on stdout because
+# the callers fold it into a message of their own.
+restore_hint() {
+  if db_is_external; then
+    printf '%s\n' "restore the database from the native dump you took before the upgrade (the zip in $BACKUP_DIR holds repositories and files, but its SQL is not a safe restore); for SQLite the zip itself would contain the database"
+  else
+    printf '%s\n' "restore the newest dump zip in $BACKUP_DIR (it contains the database)"
   fi
 }
 
@@ -909,6 +1048,9 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
 
   local unit loaded=0 dsrc=default
   local exec_path="" argv_line="" workdir_prop="" cfg="" regfile=""
+  # Held back until the binary has been resolved, for the reason given in
+  # resolve_forgejo_settings.
+  local unit_warn=""
   local -a argv=()
 
   if [[ -z $RUNNER_SERVICE ]]; then
@@ -922,9 +1064,7 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   if unit_loaded "$RUNNER_SERVICE"; then
     loaded=1
   elif [[ $tolerant -eq 1 ]]; then
-    if [[ $quiet -eq 0 ]]; then
-      warn "systemd does not know a unit called $unit, so the values below are defaults rather than what this host runs. Set RUNNER_SERVICE to the unit that runs forgejo-runner."
-    fi
+    unit_warn="systemd does not know a unit called $unit, so the values below are defaults rather than what this host runs. Set RUNNER_SERVICE to the unit that runs forgejo-runner."
     dsrc="default; $unit not found"
   else
     die_unknown_unit "$unit" RUNNER_SERVICE act_runner
@@ -949,6 +1089,24 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   else
     RUNNER_BIN=/usr/local/bin/forgejo-runner
     RUNNER_BIN_SRC=$dsrc
+  fi
+
+  # Is the runner on this host at all? Same rule as for Forgejo: the unit is
+  # loaded, or the binary is really there, or the operator set RUNNER_SERVICE
+  # or RUNNER_BIN. A runner very often lives on a machine of its own, so with
+  # none of the three this host simply does not run one, and saying that once
+  # is more use than a block of defaults followed by a warning that a
+  # registration file nobody has is missing.
+  if [[ $loaded -eq 0 && ! -x $RUNNER_BIN \
+        && $RUNNER_SERVICE_SRC != env && $RUNNER_BIN_SRC != env ]]; then
+    RUNNER_PRESENT=0
+    if [[ $quiet -eq 0 ]]; then
+      log "forgejo-runner: not installed on this host (no $unit and no $RUNNER_BIN). If it is installed under another name, set RUNNER_SERVICE or RUNNER_BIN."
+    fi
+    return 0
+  fi
+  if [[ -n $unit_warn && $quiet -eq 0 ]]; then
+    warn "$unit_warn"
   fi
 
   if [[ -n $RUNNER_HOME ]]; then
@@ -1114,6 +1272,7 @@ wait_runner_active() {
 
 upgrade_forgejo() {
   need_root
+  acquire_lock
   # Read the install before anything else: which binary, which user, which
   # config, and which address to health check. This dies on anything that
   # would not work, while the service is still running.
@@ -1128,11 +1287,19 @@ upgrade_forgejo() {
   if [[ ${cur%%.*} != "${want%%.*}" ]]; then
     warn "major version change ${cur%%.*} -> ${want%%.*}: read the release notes first:"
     warn "  $FORGEJO_REPO/src/branch/forgejo/release-notes-published/$want.md"
+    local prompt="Continue? [y/N] "
+    if db_is_external; then
+      # Going back from a major upgrade means putting the database back as
+      # well, and for anything but SQLite the zip this script writes cannot
+      # do that. Better said now than after the migration has run.
+      warn "rolling back a major upgrade needs the database restored, and the dump zip cannot do that for ${FORGEJO_DB_TYPE:-this database}; take a native database dump now if you have not"
+      prompt="Release notes read and database backed up. Continue? [y/N] "
+    fi
     # There is no way to confirm without a terminal: passing an exact version
     # still lands here, because it is the change of major version that needs
     # a decision, not how the version was chosen.
     [[ -t 0 ]] || die "major version change ${cur%%.*} -> ${want%%.*} needs confirmation and stdin is not a terminal; run this from a terminal so the prompt can be answered"
-    read -r -p "Continue? [y/N] " a; [[ $a == [yY] ]] || exit 1
+    read -r -p "$prompt" a; [[ $a == [yY] ]] || exit 1
   fi
 
   ensure_key
@@ -1164,6 +1331,10 @@ upgrade_forgejo() {
   fi
 
   if [[ $SKIP_BACKUP != 1 ]]; then
+    # What the dump about to be taken is actually worth depends on the
+    # database, and this is the last moment at which the operator can stop and
+    # take a native dump instead.
+    backup_note
     # Make the backup directory now rather than after the stop: creating it is
     # the same work either way, and a failure here costs no downtime.
     # The group is the account's primary group, not a group named after the
@@ -1232,6 +1403,7 @@ Check FORGEJO_USER and FORGEJO_BIN, or set SKIP_BACKUP=1 to upgrade without a du
 
 upgrade_runner() {
   need_root
+  acquire_lock
   # Read the install first: which binary, which directory, and where the
   # registration file is. This dies on anything that would not work, while the
   # runner is still up.
@@ -1296,6 +1468,7 @@ rollback_needs_manual_start() {  # $1 = kind, $2 = current version or empty, $3 
 
 rollback() {
   need_root
+  acquire_lock
   local bin svc kind repo restore parse nostart=0 reason="" prev="" cur="" out
   case "${2:-}" in
     "")         : ;;
@@ -1310,7 +1483,7 @@ rollback() {
     forgejo) resolve_forgejo_settings --rollback
              bin=$FORGEJO_BIN; svc=$FORGEJO_SERVICE; kind=forgejo
              repo=$FORGEJO_REPO; parse=parse_forgejo_version
-             restore="If the version you are undoing changed the database schema, restore the dump from $BACKUP_DIR as well, before starting the service" ;;
+             restore="If the version you are undoing changed the database schema, put the database back before starting the service: $(restore_hint)" ;;
     runner)  resolve_runner_settings --rollback
              bin=$RUNNER_BIN;  svc=$RUNNER_SERVICE;  kind=runner
              repo=$RUNNER_REPO; parse=parse_runner_version
@@ -1353,16 +1526,18 @@ rollback() {
   BINARY_REPLACED=2
 
   if [[ $nostart -eq 1 ]]; then
-    # This service is stopped on purpose and the lines below are the saying so,
-    # which is what the tracking exists to make sure of; clearing it here keeps
-    # on_exit from repeating it as a failure.
-    STOPPED_SVC=""
     log "The previous binary is back in place at $bin, but $svc was left stopped on purpose: $reason"
     if [[ $kind == forgejo ]]; then
-      log "Next: restore the newest dump in $BACKUP_DIR (see https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore), then: systemctl start $svc"
+      log "Next, before it is started again (see https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore): $(restore_hint)"
+      log "Then: systemctl start $svc"
     else
       log "Next: start it with: systemctl start $svc"
     fi
+    # This service is stopped on purpose and the lines above are the saying
+    # so, which is what the tracking exists to make sure of. Cleared only once
+    # every instruction is out, so an interrupt in between still gets
+    # on_exit's journal and remedy.
+    STOPPED_SVC=""
     return 0
   fi
 
@@ -1389,19 +1564,37 @@ check() {
   # that is expected to work on a half-installed host.
   resolve_forgejo_settings --tolerant --quiet
   resolve_runner_settings --tolerant --quiet
-  f=$(installed_forgejo)
-  r=$(installed_runner)
-  # Captured before printing: inside a printf argument list, "$(...)" failing
-  # would not fail the printf itself, so a dead API would silently print
-  # blank "latest" columns and exit 0 instead of stopping here.
-  fl=$(latest_tag "$FORGEJO_REPO") \
-    || die "could not fetch the latest Forgejo release from the code.forgejo.org API; check that this host can reach https://code.forgejo.org, then rerun"
-  [[ -n $fl ]] \
-    || die "the code.forgejo.org API answered but gave no Forgejo release tag; expected a tag_name in the response. Check https://code.forgejo.org/forgejo/forgejo/releases and rerun"
-  rl=$(latest_tag "$RUNNER_REPO") \
-    || die "could not fetch the latest forgejo-runner release from the code.forgejo.org API; check that this host can reach https://code.forgejo.org, then rerun"
-  [[ -n $rl ]] \
-    || die "the code.forgejo.org API answered but gave no forgejo-runner release tag; expected a tag_name in the response. Check https://code.forgejo.org/forgejo/runner/releases and rerun"
+  # A component that is not installed here is reported as "not installed",
+  # with a dash for the latest release, and its release API is not asked about
+  # at all. A Forgejo host with no runner must not have `check` fail because
+  # the runner's releases could not be fetched: it has no stake in them.
+  # "none" still means something different - the unit is there but the binary
+  # it names is missing - and installed_forgejo/installed_runner say that.
+  #
+  # Each latest tag is captured before printing: inside a printf argument
+  # list, "$(...)" failing would not fail the printf itself, so a dead API
+  # would silently print blank "latest" columns and exit 0 instead of stopping
+  # here.
+  if [[ $FORGEJO_PRESENT -eq 1 ]]; then
+    f=$(installed_forgejo)
+    fl=$(latest_tag "$FORGEJO_REPO") \
+      || die "could not fetch the latest Forgejo release from the code.forgejo.org API; check that this host can reach https://code.forgejo.org, then rerun"
+    [[ -n $fl ]] \
+      || die "the code.forgejo.org API answered but gave no Forgejo release tag; expected a tag_name in the response. Check https://code.forgejo.org/forgejo/forgejo/releases and rerun"
+  else
+    f="not installed"
+    fl="-"
+  fi
+  if [[ $RUNNER_PRESENT -eq 1 ]]; then
+    r=$(installed_runner)
+    rl=$(latest_tag "$RUNNER_REPO") \
+      || die "could not fetch the latest forgejo-runner release from the code.forgejo.org API; check that this host can reach https://code.forgejo.org, then rerun"
+    [[ -n $rl ]] \
+      || die "the code.forgejo.org API answered but gave no forgejo-runner release tag; expected a tag_name in the response. Check https://code.forgejo.org/forgejo/runner/releases and rerun"
+  else
+    r="not installed"
+    rl="-"
+  fi
   printf '%-16s %-12s %-12s\n' component installed latest
   printf '%-16s %-12s %-12s\n' forgejo "$f" "$fl"
   printf '%-16s %-12s %-12s\n' forgejo-runner "$r" "$rl"
@@ -1418,6 +1611,6 @@ case "${1:-}" in
   runner)   upgrade_runner  "${2:?usage: $0 runner <version|latest>}" ;;
   rollback) rollback "${2:-}" "${3:-}" ;;
   # The usage text is this script's own header comment. Adding a line to it
-  # means moving the end of this range.
-  *) sed -n '2,34p' "$0"; exit 1 ;;
+  # means moving the end of this range, which runs to the last header line.
+  *) sed -n '2,35p' "$0"; exit 1 ;;
 esac

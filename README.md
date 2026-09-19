@@ -4,7 +4,10 @@ A single Bash script that upgrades binary installs of [Forgejo](https://forgejo.
 and [forgejo-runner](https://code.forgejo.org/forgejo/runner) safely: it
 verifies the release signature and checksum, backs up before touching
 anything, keeps the previous binary for rollback, and checks that the service
-came back healthy.
+came back healthy. It upgrades whichever of the two is installed on a given
+host — a host may run Forgejo, the runner, or both. The runner is optional
+and is often installed on a separate host from Forgejo; see the hardening
+section below for why.
 
 It exists because Forgejo has shipped a security release nearly every month of
 2026, and a patch should take one command, not a checklist.
@@ -13,11 +16,14 @@ It exists because Forgejo has shipped a security release nearly every month of
 
 | Command | Effect |
 | --- | --- |
-| `forgejo-upgrade check` | Print installed and latest versions of both components. |
-| `forgejo-upgrade settings` | Print every setting an upgrade would use and where it came from. Read-only; works without root. |
+| `forgejo-upgrade check` | Print installed and latest versions of both components; a component that is not installed on this host shows as "not installed". |
+| `forgejo-upgrade settings` | Print every setting an upgrade would use and where it came from, or one line saying a component is not installed instead of guessing its settings. Read-only; works without root. |
 | `forgejo-upgrade forgejo <version\|latest>` | Upgrade the Forgejo server. |
 | `forgejo-upgrade runner <version\|latest>` | Upgrade forgejo-runner. |
 | `forgejo-upgrade rollback forgejo\|runner [--no-start]` | Stop, restore the previous binary, then start and confirm it is active — unless `--no-start` is given or the major version changed, in which case it leaves the service stopped and prints what to restore first. |
+
+Only one `forgejo`, `runner`, or `rollback` invocation runs at a time; a
+second one stops at the lock held in `/run/forgejo-upgrade.lock`.
 
 A server upgrade runs these steps in order:
 
@@ -43,7 +49,12 @@ A server upgrade runs these steps in order:
    owner and mode) and confirm the binary runs as `FORGEJO_USER`, and that
    this account can read the config and write to `BACKUP_DIR`.
 8. Flush Forgejo's queues, then stop the service.
-9. Take a `forgejo dump` backup into `BACKUP_DIR`.
+9. Take a `forgejo dump` backup into `BACKUP_DIR`. For SQLite this zip is a
+   complete backup, database included. For PostgreSQL or MySQL it holds
+   repositories, attachments, and the custom directory only — not the
+   database — so the script warns about this before stopping anything and,
+   on a major upgrade, asks whether a native dump has been taken; running
+   that native dump (`pg_dump`, `mysqldump`) is the operator's own job.
 10. Copy the old binary to `<name>.prev`, install the new one, keeping its
     owner, group, and mode.
 11. Start the service and poll `/api/healthz` for up to a minute, until it
@@ -65,7 +76,7 @@ bound.
 
 ## Installation
 
-Copy the script to the host that runs Forgejo:
+Copy the script to each host that runs Forgejo or the runner:
 
 ```bash
 sudo install -m 755 forgejo-upgrade.sh /usr/local/sbin/forgejo-upgrade
@@ -82,6 +93,12 @@ services and writes to `/usr/local/bin`; `runuser` or `sudo` is needed to
 run Forgejo's own commands as `FORGEJO_USER` even though the script itself
 already runs as root.
 
+PostgreSQL and MySQL installs also need their own database backup tooling
+(`pg_dump`, `mysqldump`) kept up to date. The script does not run a native
+dump itself: doing so would mean a new dependency, database credentials,
+and possibly a remote database host, all inside the window the service is
+stopped for.
+
 ### Before the first upgrade
 
 Run `sudo forgejo-upgrade settings` and read each line. Every value can be
@@ -97,6 +114,13 @@ three places it came from. Any path override must be given as an absolute
 path, because the checks before the stop and the commands after it can
 otherwise resolve it against two different directories.
 
+A component counts as installed when its systemd unit is loaded, its
+resolved binary is executable, or the operator set its service or binary
+variable (`FORGEJO_SERVICE`/`FORGEJO_BIN`, `RUNNER_SERVICE`/`RUNNER_BIN`).
+Otherwise `settings` prints one line saying so instead of a guessed
+settings block, and `check` prints "not installed" with "-" for the latest
+version instead of asking the release API about it.
+
 ### Forgejo settings
 
 | Variable | Read from | Default |
@@ -108,8 +132,14 @@ otherwise resolve it against two different directories.
 | `FORGEJO_WORK_PATH` | `--work-path`/`-w` in `ExecStart=`, then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=` (the flag wins, as it does for Forgejo), then `WORK_PATH` in `app.ini`, which replaces the unit's value when set; `WorkingDirectory=` is not consulted | unset; Forgejo then uses the directory holding the binary, with a warning |
 | `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); with `http+unix` the URL is `http://unix` and curl dials `FORGEJO_SOCKET` | `http://127.0.0.1:3000` |
 | `FORGEJO_SOCKET` | `HTTP_ADDR` in `[server]` when `PROTOCOL` is `http+unix`, whatever `LOCAL_ROOT_URL` says, because that is the socket Forgejo itself dials | unset |
+| `FORGEJO_DB_TYPE` | `DB_TYPE` in `[database]` | unset (unknown) when the config cannot be read |
 | `BACKUP_DIR` | — | `/var/backups/forgejo` |
 | `SKIP_BACKUP` | — | `0` |
+
+`FORGEJO_DB_TYPE` decides what the backup step and the rollback messages
+say: SQLite's database travels inside the `forgejo dump` zip, PostgreSQL's
+and MySQL's do not, and an unreadable config is treated as external out of
+caution.
 
 The unit's `Environment=` entries are passed to every Forgejo CLI call the
 script makes. Those calls run as `FORGEJO_USER` — via `runuser`, falling
@@ -200,11 +230,13 @@ If the server does not come back healthy:
 sudo forgejo-upgrade rollback forgejo
 ```
 
-Rollback works for patch releases because they do not change the database
-schema. After a major upgrade, Forgejo refuses to start the older release
-against the migrated database, so rollback deliberately leaves the service
-stopped and tells you to restore the pre-upgrade dump from `BACKUP_DIR`
-first — see Forgejo's own
+Rollback works for patch releases because they normally do not change the
+database schema. After a major upgrade, Forgejo refuses to start the older
+release against the migrated database, so rollback deliberately leaves the
+service stopped and tells you what to restore first: for SQLite, the dump
+zip in `BACKUP_DIR`; for PostgreSQL or MySQL, the native dump you took
+before the upgrade, because the zip's SQL is not a safe restore — see
+Forgejo's own
 [backup and restore guide](https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore)
 — then run `systemctl start` yourself. Pass `--no-start` to force that same
 stopped-and-waiting behavior on any rollback, patch or major. Rollback does
@@ -224,8 +256,8 @@ next one ships.
 ## Hardening
 
 Upgrading promptly closes known holes. The settings below limit what the next
-unknown one can reach. They assume Forgejo and the runner are installed from
-binaries as separate users and services.
+unknown one can reach. They apply wherever each component runs, as a binary
+install under its own user and service; a host does not need to run both.
 
 ### Reduce exposure
 
@@ -411,9 +443,10 @@ can reach.
 - Scope API tokens to the minimum needed and expire them. Two of the fixes in
   16.0.4 concerned scoped tokens reaching past their scope.
 - `BACKUP_DIR` has to be writable by the Forgejo user, because `forgejo
-  dump` runs as that account. Copy completed dumps somewhere that account
-  cannot write — a root-owned directory, or another host entirely. A
-  compromise that can delete its own backups is much worse than one that
+  dump` runs as that account. Copy completed dumps — and, for PostgreSQL or
+  MySQL, the native database dump taken alongside them — somewhere that
+  account cannot write: a root-owned directory, or another host entirely.
+  A compromise that can delete its own backups is much worse than one that
   cannot.
 
 ## Development

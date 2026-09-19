@@ -41,6 +41,15 @@ that every collaborator picks them up the same way.
 - **Plain language over jargon.** Comments, log messages, and docs are read
   by an operator at the moment an upgrade has gone wrong. Where a domain
   term is the right word, use it and gloss it once.
+- **Neither component is assumed present.** A host may run Forgejo, the
+  runner, or both. A component counts as present when its systemd unit is
+  loaded, its resolved binary is executable, or the operator set its
+  service or binary variable (`FORGEJO_SERVICE`/`FORGEJO_BIN`,
+  `RUNNER_SERVICE`/`RUNNER_BIN`). Read-only commands (`settings`, `check`)
+  say "not installed" once for a component that is absent, and must not
+  warn about it or ask the release API for its latest version. The
+  upgrade and rollback commands are unchanged: they still die on a unit
+  that does not exist.
 - **Never weaken verification to make a download succeed.** No skipping the
   signature check, no `--insecure`, no falling back to an unverified file, no
   accepting a signature from a key other than the one pinned in
@@ -69,6 +78,19 @@ that every collaborator picks them up the same way.
     way.
   - `on_exit`: `rm -rf "$WORKDIR" || warn` — a cleanup failure must not
     replace the real exit status.
+  - `on_exit`: `rm -rf "$LOCK_DIR" || warn` — like the `WORKDIR` removal, a
+    cleanup failure must not replace the real exit status.
+  - `acquire_lock`: `mkdir "$LOCK_DIR" 2>/dev/null` — `mkdir` on an existing
+    directory is the failure, and that failure is the signal that another
+    run already holds the lock, not an error to hide.
+  - `acquire_lock`: `kill -0 "$pid" 2>/dev/null` — only "is that pid alive"
+    is asked, to decide whether the stale-lock message says "running" or
+    "not running".
+  - `acquire_lock`: `if ! read -r pid < "$LOCK_DIR/pid"; then :; fi` — read
+    returns non-zero for a pid file with no final newline although it has
+    filled in the value, and an empty file leaves the value empty; both
+    are covered by the message wording, so the exit status is deliberately
+    not what is judged.
   - `ensure_key`: `gpg --list-keys "$RELEASE_KEY" >/dev/null 2>&1` — only the
     exit status ("is the key present") is used.
   - `gpg_valid_sig`: `gpg --verify ... 2>/dev/null || true` — the exit
@@ -205,6 +227,25 @@ re-checking against a current release.
   does leave the service down, which is why `rollback` across a major
   version does not auto-start — it stops, restores `.prev`, and waits for
   the operator to restore the pre-upgrade dump first.
+- **`forgejo dump`'s zip is not a safe database restore for PostgreSQL or
+  MySQL.** Forgejo's upgrade guide, "Backup" section
+  (<https://forgejo.org/docs/latest/admin/upgrade/>), says the zip
+  "contains a copy of the database [but] has serious long standing open
+  bugs that may introduce problems when re-injecting the SQL dump in a new
+  database," and says to use `pg_dump`/`mysqldump` instead. For SQLite the
+  guide says the opposite: "there is no need to dump SQLite because the
+  database itself is included in the zip file already." `cmd/dump.go` has
+  no flag to skip the database portion — `--skip-repository`,
+  `--skip-log`, `--skip-custom-dir`, `--skip-lfs-data`,
+  `--skip-attachment-data`, `--skip-package-data`, `--skip-index`, and
+  `--skip-repo-archives` exist, a database skip does not — so the zip
+  always carries the SQL regardless of `DB_TYPE`. The script does not
+  automate a native dump: doing so would add a new dependency, need
+  database credentials, and possibly reach a remote database host, all
+  inside the window the service is stopped. Instead it reads `DB_TYPE`
+  from `[database]` into `FORGEJO_DB_TYPE`, warns before stopping anything
+  when the database is not SQLite, gates the major-upgrade confirmation on
+  a native dump having been taken, and words the rollback hints to match.
 
 ### Documented install layout
 
@@ -324,9 +365,14 @@ and
   the health check passes. A new code path between stop and health must
   keep those assignments. `rollback --no-start`, and a rollback across a
   major version, are the one deliberate exception: they leave the service
-  stopped on purpose, and they clear `STOPPED_SVC` only after printing the
-  restore-the-dump-then-start steps, so the stop is never silent even
-  though it is intentional.
+  stopped on purpose, and they clear `STOPPED_SVC` only after both of the
+  restore-then-start instruction lines have printed, so an interrupt
+  between those two lines still gets the journal and the remedy from
+  `on_exit`, and the stop is never silent even though it is intentional.
+- **One run at a time.** `acquire_lock` runs right after the root check in
+  `upgrade_forgejo`, `upgrade_runner`, and `rollback`, before anything is
+  touched, and is released only by `on_exit`, last, after everything else.
+  `check` and `settings` are read-only and never take the lock.
 - **`eval` appears exactly once**, to turn the `Environment=` line from
   `systemctl show` back into an array. It is there because systemd emits
   that line as shell-quoted words and nothing else undoes that quoting
@@ -335,7 +381,7 @@ and
   paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
   behaviors and that is fine.
 - **The usage text is the script's own header comment**, printed with
-  `sed -n '2,34p'`. Adding a line to the header means updating that range.
+  `sed -n '2,35p'`. Adding a line to the header means updating that range.
 
 ## Testing
 
@@ -415,6 +461,12 @@ There is no Forgejo install on the development machine, so testing is split.
   in the environment to a path that conflicts with `WORK_PATH` in the stub
   `app.ini` and confirm `settings` only warns while `forgejo` and
   `rollback forgejo` die on the conflict; an equal value passes silently.
+  With no units and no binaries — the real `PATH` on the development
+  machine — `settings` must print exactly the two "not installed" lines
+  and nothing else, and `check` must print "not installed" and "-" for
+  both components and exit 0 even when `curl` fails, since an absent
+  component is never asked about. Every existing stub unit's output must
+  stay byte-identical to what it printed before this change.
 - **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
   on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
   fails; swap in one that prints `200` and confirm it passes. This needs
@@ -430,6 +482,19 @@ There is no Forgejo install on the development machine, so testing is split.
   handled by `rollback` itself before the function is ever called, not by
   the function. Feed it these version-pair cases and check the exit
   status each way.
+- **The lock, from the sourced definitions, with `LOCK_DIR` pointed under
+  `tmp/`.** A first `acquire_lock` succeeds; a second call, in a subshell so
+  it does not exit the test, dies naming the pid recorded by the first as
+  still running; overwrite the `pid` file with a pid that is not running
+  (for example `999999`) and confirm the message changes to "not running"
+  and gives the `rm -r` remedy; confirm the directory is gone once the
+  shell that acquired it exits, since `on_exit` releases it.
+- **`FORGEJO_DB_TYPE`, against stub `app.ini` files.** One stub with
+  `[database] DB_TYPE = postgres` and one with `sqlite3`; an unreadable
+  config must resolve to unknown, not a guess. Since the upgrade prompt and
+  backup warning cannot be run here (they need a real stop), print
+  `db_is_external`, `backup_note`, and `restore_hint` straight from the
+  sourced definitions for each stub, rather than only reading the source.
 
 ## Review discipline
 
