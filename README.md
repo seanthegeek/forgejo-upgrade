@@ -17,7 +17,7 @@ It exists because Forgejo has shipped a security release nearly every month of
 | `forgejo-upgrade settings` | Print every setting an upgrade would use and where it came from. Read-only; works without root. |
 | `forgejo-upgrade forgejo <version\|latest>` | Upgrade the Forgejo server. |
 | `forgejo-upgrade runner <version\|latest>` | Upgrade forgejo-runner. |
-| `forgejo-upgrade rollback forgejo\|runner` | Stop, restore the previous binary, start, confirm it is active. |
+| `forgejo-upgrade rollback forgejo\|runner [--no-start]` | Stop, restore the previous binary, then start and confirm it is active — unless `--no-start` is given or the major version changed, in which case it leaves the service stopped and prints what to restore first. |
 
 A server upgrade runs these steps in order:
 
@@ -27,9 +27,11 @@ A server upgrade runs these steps in order:
 3. Warn and ask for confirmation on a major version change.
 4. Import the Forgejo release key if it is not already in the root keyring.
 5. Download the binary and its detached signature, and verify that the
-   signature chains to the Forgejo release key. Verify the `.sha256` file too
-   when one is published; only a 404 counts as "not published" — any other
-   download failure stops the upgrade.
+   signature chains to the Forgejo release key. If the signature was made
+   with a subkey not yet in the local keyring, refresh only that pinned key
+   from the keyserver and check once more before giving up. Verify the
+   `.sha256` file too when one is published; only a 404 counts as "not
+   published" — any other download failure stops the upgrade.
 6. Confirm the downloaded binary reports the requested version.
 7. While the service is still up: if it is active, confirm it answers a
    health check; if a backup will be taken, create `BACKUP_DIR` and confirm
@@ -85,7 +87,9 @@ Every setting is resolved in this order: an environment variable the
 operator set, then a value read from the systemd unit or `app.ini`, then a
 documented default. Resolution happens before anything is stopped, and
 `forgejo-upgrade settings` prints every value together with which of those
-three places it came from.
+three places it came from. Any path override must be given as an absolute
+path, because the checks before the stop and the commands after it can
+otherwise resolve it against two different directories.
 
 ### Forgejo settings
 
@@ -117,7 +121,7 @@ in front of Forgejo.
 | --- | --- | --- |
 | `RUNNER_SERVICE` | — | `forgejo-runner` |
 | `RUNNER_BIN` | `ExecStart=` program | `/usr/local/bin/forgejo-runner` |
-| `RUNNER_HOME` | `WorkingDirectory=` | `/home/runner` |
+| `RUNNER_HOME` | `WorkingDirectory=` | `/` for a loaded unit that sets no `WorkingDirectory=` (systemd's default); `/home/runner` only when the unit is not found |
 | `RUNNER_CONFIG` | `-c`/`--config` in `ExecStart=` | unset |
 
 The registration file the runner already holds is `runner.file` from
@@ -186,9 +190,15 @@ sudo forgejo-upgrade rollback forgejo
 ```
 
 Rollback works for patch releases because they do not change the database
-schema. After a major upgrade, rollback needs the pre-upgrade dump restored
-as well. Rollback does not require the current binary to be intact — it
-only needs the `.prev` file, which is what a failed install leaves behind.
+schema. After a major upgrade, Forgejo refuses to start the older release
+against the migrated database, so rollback deliberately leaves the service
+stopped and tells you to restore the pre-upgrade dump from `BACKUP_DIR`
+first — see Forgejo's own
+[backup and restore guide](https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore)
+— then run `systemctl start` yourself. Pass `--no-start` to force that same
+stopped-and-waiting behavior on any rollback, patch or major. Rollback does
+not require the current binary to be intact — it only needs the `.prev`
+file, which is what a failed install leaves behind.
 
 ### Knowing when to run it
 
@@ -389,7 +399,9 @@ can reach.
 - Enable two-factor authentication on every admin account.
 - Scope API tokens to the minimum needed and expire them. Two of the fixes in
   16.0.4 concerned scoped tokens reaching past their scope.
-- Back up the dump directory somewhere the Forgejo user cannot write. A
+- `BACKUP_DIR` has to be writable by the Forgejo user, because `forgejo
+  dump` runs as that account. Copy completed dumps somewhere that account
+  cannot write — a root-owned directory, or another host entirely. A
   compromise that can delete its own backups is much worse than one that
   cannot.
 

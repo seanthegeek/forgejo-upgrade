@@ -7,7 +7,7 @@
 #   forgejo-upgrade.sh settings               show the settings read from the unit and app.ini
 #   forgejo-upgrade.sh forgejo <ver|latest>   upgrade the Forgejo server
 #   forgejo-upgrade.sh runner  <ver|latest>   upgrade forgejo-runner
-#   forgejo-upgrade.sh rollback forgejo|runner   restore the previous binary
+#   forgejo-upgrade.sh rollback forgejo|runner [--no-start]   restore the previous binary
 #
 # Overrides (each is read from the systemd unit or app.ini when unset):
 #   FORGEJO_SERVICE    forgejo
@@ -120,7 +120,10 @@ on_exit() {
       # 2 means a rollback already moved the previous binary back over the new
       # one, so no .prev file is left and rolling back again is not possible.
       2) warn "the previous binary is back in place at $STOPPED_BIN and no $STOPPED_BIN.prev remains"
-         warn "read the journal above, then start the service with: systemctl start $STOPPED_SVC" ;;
+         warn "read the journal above, then start the service with: systemctl start $STOPPED_SVC"
+         # on_exit cannot tell for certain that this is the server rather than
+         # the runner, so the remedy is offered against what the journal says.
+         warn "if the journal says the database is for a newer Forgejo, restore the dump from $BACKUP_DIR first (https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore), then start" ;;
       *) warn "the binary was not changed. Start the service again with: systemctl start $STOPPED_SVC" ;;
     esac
   fi
@@ -201,12 +204,43 @@ ensure_key() {
   fi
 }
 
+# The status lines gpg printed during the last gpg_valid_sig call. Kept in a
+# variable rather than returned on stdout so the two questions asked of them -
+# "is this signed by the pinned key" and "was the key simply missing" - can both
+# be answered without a second run of gpg.
+GPG_STATUS=""
+
+gpg_valid_sig() {  # $1 = signature file, $2 = signed file -> 0 when RELEASE_KEY signed it
+  # Releases are signed by a rotating subkey. gpg's VALIDSIG status line lists
+  # the signing subkey first and the primary key last, so the fingerprint is
+  # matched at the end of the line; matching it straight after VALIDSIG fails
+  # on every release.
+  #
+  # Two deliberate suppressions here. gpg's human-readable output on stderr is
+  # dropped because the machine-readable status lines are what is judged. And
+  # "|| true" is there because gpg --verify exits non-zero for a signature it
+  # cannot check at all - an unknown key gives NO_PUBKEY and a failure exit -
+  # and that case is not an error yet: the caller reads the status lines and
+  # refreshes the pinned key. Nothing here decides a signature is good; only
+  # the VALIDSIG match below does that.
+  GPG_STATUS=$(gpg --status-fd 1 --verify "$1" "$2" 2>/dev/null || true)
+  grep -Eq "^\[GNUPG:\] VALIDSIG .* $RELEASE_KEY$" <<<"$GPG_STATUS"
+}
+
+gpg_missing_key() {  # -> 0 when the last gpg_valid_sig failed for want of the key
+  # NO_PUBKEY is "the key is not in the keyring"; ERRSIG is gpg's more general
+  # "could not check this signature", which is what it prints for an unknown
+  # key when it cannot say more. Anything else - a bad signature above all - is
+  # not a missing key and must not lead to a retry.
+  grep -Eq '^\[GNUPG:\] (NO_PUBKEY|ERRSIG) ' <<<"$GPG_STATUS"
+}
+
 fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; dies otherwise
   # Deliberately no -f: without it curl reports the status code instead of one
   # generic failure, and only a 404 means "this release has no .sha256". A DNS
   # failure, a TLS error, a timeout, or a 500 must stop the upgrade rather than
   # pass for "not published" and quietly leave the checksum unverified.
-  local code
+  local code body
   code=$(curl -sSL -o "$2" -w '%{http_code}' "$1") \
     || die "could not download $1 (curl exit $?). Expected either the release's .sha256 file or a 404 saying there is none; check this host's network access to code.forgejo.org and rerun"
   case "$code" in
@@ -214,7 +248,12 @@ fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; 
     # With no -f, curl writes the server's error page into the file, so a 404
     # leaves something behind that is not a checksum. Take it away.
     404) rm -f "$2"; return 1 ;;
-    *)   die "unexpected HTTP $code fetching $1. Expected 200 with the checksum file, or 404 meaning the release has none; what the server actually sent is left in $2 to look at. Rerun, and if it keeps happening check whether code.forgejo.org is having trouble" ;;
+    # The file itself is no help to the operator: on_exit deletes the whole
+    # working directory on the way out. Quote the start of what the server
+    # said instead, capped so an HTML error page cannot flood the terminal.
+    *)   body="(nothing)"
+         if [[ -s $2 ]]; then body=$(head -c 200 "$2" | head -n1); fi
+         die "unexpected HTTP $code fetching $1. Expected 200 with the checksum file, or 404 meaning the release has none; the server answered: '$body'. Rerun, and if it keeps happening check whether code.forgejo.org is having trouble" ;;
   esac
 }
 
@@ -224,12 +263,24 @@ fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
   curl -fL --progress-bar -o "$WORKDIR/$f"     "$base/$f"
   curl -fsSL            -o "$WORKDIR/$f.asc" "$base/$f.asc"
 
-  # Releases are signed by a rotating subkey; the primary key fingerprint is
-  # the last field of gpg's VALIDSIG status line.
   log "Verifying GPG signature"
-  gpg --status-fd 1 --verify "$WORKDIR/$f.asc" "$WORKDIR/$f" 2>/dev/null \
-    | grep -Eq "^\[GNUPG:\] VALIDSIG .* $RELEASE_KEY$" \
-    || die "signature on $f is not from $RELEASE_KEY"
+  if ! gpg_valid_sig "$WORKDIR/$f.asc" "$WORKDIR/$f"; then
+    # A signature this keyring cannot check at all is the one case worth
+    # retrying: Forgejo signs each release with a subkey of the pinned primary
+    # key, and a subkey issued since the key was imported is not in the keyring
+    # yet. Anything else - a bad signature, a signature by another key - stops
+    # the upgrade here.
+    gpg_missing_key \
+      || die "signature on $f is not from $RELEASE_KEY. Expected gpg to report a VALIDSIG line ending in that fingerprint, the Forgejo release key published at https://forgejo.org/download/; it did not. Do not install this file: it is not signed by the key this script trusts"
+    log "signature is by a key not in the keyring; refreshing the pinned key $RELEASE_KEY from $KEYSERVER (the same fingerprint, nothing else)"
+    # Only the pinned fingerprint is ever fetched, so the trust root does not
+    # move: this can add a new subkey of the key already trusted, and nothing
+    # else.
+    gpg --keyserver "$KEYSERVER" --recv "$RELEASE_KEY" \
+      || die "could not refresh the key $RELEASE_KEY from $KEYSERVER; the signature on $f cannot be checked, so the download is not trusted and nothing was installed. Check this host's network access to the keyserver, or import the key by hand from https://forgejo.org/download/, then rerun"
+    gpg_valid_sig "$WORKDIR/$f.asc" "$WORKDIR/$f" \
+      || die "signature on $f is not from $RELEASE_KEY. The pinned key was refreshed from $KEYSERVER and the signature still does not verify against it, so this release is signed by something other than the Forgejo release key. Do not install it; check the fingerprint published at https://forgejo.org/download/ and report the mismatch"
+  fi
 
   # Older releases do not publish a .sha256 at all, which fetch_sha256 reports
   # as a 404 and nothing else.
@@ -384,6 +435,16 @@ trim_slash() {  # $1 -> $1 with its trailing slashes off, except that / stays /
   printf '%s\n' "$p"
 }
 
+require_abs() {  # $1 = name, $2 = value, $3 = 1 to warn instead of dying
+  # Only for paths the operator set in the environment. Everything read from a
+  # unit or a config file is made absolute where it is read, against the
+  # directory the daemon itself runs in; an env var has no such directory to be
+  # relative to, and the script does not run from one place throughout.
+  if [[ -z $2 || $2 == /* ]]; then return 0; fi
+  local msg="$1=$2 is a relative path. The checks before the stop run from this directory and the commands after it from the work path, so they would name different files; set $1 to an absolute path"
+  if [[ ${3:-0} -eq 0 ]]; then die "$msg"; else warn "$msg"; fi
+}
+
 setting_line() {  # $1 = name, $2 = value, $3 = where the value came from
   printf '    %-17s %-31s (%s)\n' "$1" "$2" "$3" >&2
 }
@@ -496,6 +557,9 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     FORGEJO_SERVICE_SRC="env"
   fi
   unit=$(unit_name "$FORGEJO_SERVICE")
+  if [[ $BACKUP_DIR_SRC == env ]]; then
+    require_abs BACKUP_DIR "$BACKUP_DIR" "$tolerant"
+  fi
 
   if unit_loaded "$FORGEJO_SERVICE"; then
     loaded=1
@@ -534,6 +598,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
 
   if [[ -n $FORGEJO_BIN ]]; then
     FORGEJO_BIN_SRC="env"
+    require_abs FORGEJO_BIN "$FORGEJO_BIN" "$tolerant"
   elif [[ -n $exec_path ]]; then
     FORGEJO_BIN=$exec_path
     FORGEJO_BIN_SRC="unit ExecStart"
@@ -564,6 +629,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # script does not read a work path out of it either.
   if [[ -n $FORGEJO_WORK_PATH ]]; then
     FORGEJO_WORK_PATH_SRC="env"
+    require_abs FORGEJO_WORK_PATH "$FORGEJO_WORK_PATH" "$tolerant"
   else
     wp=$(forgejo_env_value FORGEJO_WORK_DIR)
     if [[ -n $wp ]]; then
@@ -587,6 +653,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
 
   if [[ -n $FORGEJO_CONFIG ]]; then
     FORGEJO_CONFIG_SRC="env"
+    require_abs FORGEJO_CONFIG "$FORGEJO_CONFIG" "$tolerant"
   else
     cfg=$(argv_opt --config -c -- ${argv[@]+"${argv[@]}"})
     if [[ -n $cfg && $cfg == /* ]]; then
@@ -666,6 +733,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # URL is read from app.ini or given by the operator.
   if [[ -n $FORGEJO_SOCKET ]]; then
     FORGEJO_SOCKET_SRC="env"
+    require_abs FORGEJO_SOCKET "$FORGEJO_SOCKET" "$tolerant"
   elif [[ -r $FORGEJO_CONFIG ]]; then
     resolve_forgejo_socket "$tolerant" "$quiet"
   fi
@@ -772,6 +840,7 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
 
   if [[ -n $RUNNER_BIN ]]; then
     RUNNER_BIN_SRC="env"
+    require_abs RUNNER_BIN "$RUNNER_BIN" "$tolerant"
   elif [[ -n $exec_path ]]; then
     RUNNER_BIN=$exec_path
     RUNNER_BIN_SRC="unit ExecStart"
@@ -782,10 +851,19 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
 
   if [[ -n $RUNNER_HOME ]]; then
     RUNNER_HOME_SRC="env"
+    require_abs RUNNER_HOME "$RUNNER_HOME" "$tolerant"
   elif [[ -n $workdir_prop ]]; then
     RUNNER_HOME=$workdir_prop
     RUNNER_HOME_SRC="unit WorkingDirectory"
+  elif [[ $loaded -eq 1 ]]; then
+    # systemd starts a system service whose unit sets no WorkingDirectory= in
+    # /, so that is where a relative -c and the .runner registration file
+    # resolve for this daemon. /home/runner would be a guess about a unit that
+    # was read and found to say nothing of the sort.
+    RUNNER_HOME=/
+    RUNNER_HOME_SRC="systemd default; unit sets no WorkingDirectory"
   else
+    # No unit to read at all, so the documented install is the best there is.
     RUNNER_HOME=/home/runner
     RUNNER_HOME_SRC=$dsrc
   fi
@@ -793,6 +871,7 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
 
   if [[ -n $RUNNER_CONFIG ]]; then
     RUNNER_CONFIG_SRC="env"
+    require_abs RUNNER_CONFIG "$RUNNER_CONFIG" "$tolerant"
   else
     cfg=$(argv_opt --config -c -- ${argv[@]+"${argv[@]}"})
     if [[ -n $cfg ]]; then
@@ -1081,9 +1160,27 @@ upgrade_runner() {
 
 # --- rollback / check --------------------------------------------------------
 
+rollback_needs_manual_start() {  # $1 = kind, $2 = current version or empty, $3 = previous version -> 0 when the service must not be started again by this script
+  # Forgejo will not run on a database a newer release has already migrated: it
+  # logs that the database is for a newer Forgejo and exits at once, keeping
+  # the data unchanged. Nothing is corrupted, but starting it would leave the
+  # operator with a dead service and no hint that the dump has to go back
+  # first, so the service is left stopped and the message says what to do.
+  # Only across a major version, which is where Forgejo's migrations live; only
+  # for the server, since the runner keeps no database; and only when the
+  # version being replaced could actually be read, because an unreadable one is
+  # evidence of nothing.
+  [[ $1 == forgejo && -n $2 && ${2%%.*} != "${3%%.*}" ]]
+}
+
 rollback() {
   need_root
-  local bin svc kind repo restore
+  local bin svc kind repo restore parse nostart=0 reason="" prev="" cur="" out
+  case "${2:-}" in
+    "")         : ;;
+    --no-start) nostart=1; reason="--no-start was given" ;;
+    *) die "unknown option '$2'. Usage: rollback forgejo|runner [--no-start], where --no-start puts the previous binary back and leaves the service stopped" ;;
+  esac
   # Same reading of the unit and config as an upgrade does, so a rollback puts
   # the binary back where this host really keeps it. --rollback drops only the
   # "there is an executable at BIN" check: a rollback is for undoing an upgrade
@@ -1091,17 +1188,39 @@ rollback() {
   case "$1" in
     forgejo) resolve_forgejo_settings --rollback
              bin=$FORGEJO_BIN; svc=$FORGEJO_SERVICE; kind=forgejo
-             repo=$FORGEJO_REPO
+             repo=$FORGEJO_REPO; parse=parse_forgejo_version
              restore="If the version you are undoing changed the database schema, restore the dump from $BACKUP_DIR as well, before starting the service" ;;
     runner)  resolve_runner_settings --rollback
              bin=$RUNNER_BIN;  svc=$RUNNER_SERVICE;  kind=runner
-             repo=$RUNNER_REPO
+             repo=$RUNNER_REPO; parse=parse_runner_version
              restore="There is no dump to restore for the runner, and its registration in $RUNNER_REG_FILE survives a binary swap" ;;
-    *) die "rollback forgejo|runner" ;;
+    *) die "rollback forgejo|runner [--no-start]" ;;
   esac
   [[ -x $bin.prev ]] \
     || die "no previous binary at $bin.prev to roll back to, so nothing was changed and $svc was left exactly as it was. This script keeps the binary it replaced at that path only until the next upgrade overwrites it, so there is nothing older to go back to here. To go back by hand: download the release you want from $repo/releases, check its signature, and install it over $bin. $restore"
-  log "Rolling back $bin to $("$bin.prev" --version)"
+
+  # Read both versions before anything is stopped. The previous binary is the
+  # one that will be running afterwards, so it has to run at all to be worth
+  # putting back, and what it reports decides whether starting it is safe.
+  out=$("$bin.prev" --version 2>&1) \
+    || die "$bin.prev does not run (exit $?): '${out%%$'\n'*}'. The binary this rollback would put back has to run to be worth restoring, so nothing was changed and $svc was left exactly as it was. Download the release you want from $repo/releases, check its signature, and install it over $bin by hand. $restore"
+  prev=$("$parse" "$out")
+  # The installed binary, by contrast, is the one a rollback exists to undo: it
+  # may be half-written or the wrong architecture. A failure here is expected
+  # and leaves the version unknown rather than stopping the rollback.
+  if [[ -x $bin ]]; then
+    if out=$("$bin" --version 2>&1); then cur=$("$parse" "$out"); fi
+  fi
+  log "Rolling back $bin from ${cur:-unknown} to ${prev:-unknown}"
+
+  if [[ $nostart -eq 0 ]] && rollback_needs_manual_start "$kind" "$cur" "$prev"; then
+    nostart=1
+    reason="going from $cur back to ${prev:-an unreadable version} crosses a major version, and Forgejo refuses to start an older release on a database a newer one has already migrated - it would log that the database is for a newer Forgejo and exit at once"
+    if [[ -z $prev ]]; then
+      reason="$reason (the previous binary's version could not be read, so it is treated as a different major version)"
+    fi
+  fi
+
   # Tracked before the stop for the same reason as in the upgrades.
   STOPPED_SVC="$svc"
   STOPPED_KIND="$kind"
@@ -1111,6 +1230,21 @@ rollback() {
   # 2, not 1: the move consumed the .prev file, so if this rollback fails there
   # is no older binary left and on_exit must not suggest rolling back again.
   BINARY_REPLACED=2
+
+  if [[ $nostart -eq 1 ]]; then
+    # This service is stopped on purpose and the lines below are the saying so,
+    # which is what the tracking exists to make sure of; clearing it here keeps
+    # on_exit from repeating it as a failure.
+    STOPPED_SVC=""
+    log "The previous binary is back in place at $bin, but $svc was left stopped on purpose: $reason"
+    if [[ $kind == forgejo ]]; then
+      log "Next: restore the newest dump in $BACKUP_DIR (see https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore), then: systemctl start $svc"
+    else
+      log "Next: start it with: systemctl start $svc"
+    fi
+    return 0
+  fi
+
   systemctl start "$svc"
   case "$kind" in
     forgejo) wait_forgejo_healthy ;;
@@ -1161,7 +1295,7 @@ case "${1:-}" in
   settings) settings ;;
   forgejo)  upgrade_forgejo "${2:?usage: $0 forgejo <version|latest>}" ;;
   runner)   upgrade_runner  "${2:?usage: $0 runner <version|latest>}" ;;
-  rollback) rollback "${2:-}" ;;
+  rollback) rollback "${2:-}" "${3:-}" ;;
   # The usage text is this script's own header comment. Adding a line to it
   # means moving the end of this range.
   *) sed -n '2,34p' "$0"; exit 1 ;;

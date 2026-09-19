@@ -50,7 +50,12 @@ that every collaborator picks them up the same way.
   whether the release moved to a new subkey of the same primary key, which
   the current check already tolerates. Only change `RELEASE_KEY` after
   confirming the new fingerprint on <https://forgejo.org/download/> and name
-  that source in the commit message.
+  that source in the commit message. When a signature fails because the
+  signing subkey is not yet in the local keyring, the script refreshes
+  exactly `RELEASE_KEY` from `KEYSERVER` and retries the check once — that
+  is the only automatic key action it takes, it never imports anything
+  else, and a second failure is still a hard stop. The trust root does not
+  move.
 - **Every failure message must be actionable.** Name what was expected, what
   was observed, and the remedy. Any exit that leaves a service stopped or
   unhealthy must print the journal and the exact command to recover, which is
@@ -66,8 +71,11 @@ that every collaborator picks them up the same way.
     replace the real exit status.
   - `ensure_key`: `gpg --list-keys "$RELEASE_KEY" >/dev/null 2>&1` — only the
     exit status ("is the key present") is used.
-  - `fetch_and_verify`: `gpg --verify ... 2>/dev/null` — the status-fd
-    `VALIDSIG` line is what is checked, not the human-readable output.
+  - `gpg_valid_sig`: `gpg --verify ... 2>/dev/null || true` — the exit
+    status is ignored on purpose, because gpg exits non-zero on
+    `NO_PUBKEY`; the status-fd lines are what is judged instead
+    (`VALIDSIG` for the pinned key, `NO_PUBKEY`/`ERRSIG` for "refresh the
+    key and retry"). The human-readable stderr stays suppressed.
   - `fetch_sha256`: runs `curl` without `-f` and reads the HTTP status
     itself; only a 404 is treated as "not published" and warned about, and
     the upgrade continues on the GPG signature alone. A transport error or
@@ -158,6 +166,14 @@ re-checking against a current release.
   range.
 - **The runner's registration survives a binary swap.** It lives in the
   `.runner` file next to the config. No re-registration after an upgrade.
+- **An older Forgejo binary refuses to start on a database a newer release
+  migrated.** It hits `log.Fatal` with "Your database ... is for a newer
+  Forgejo ... Forgejo will exit to keep your database safe and unchanged"
+  (`models/gitea_migrations/migrations.go`,
+  `models/forgejo_migrations/migrate.go`). This cannot corrupt data, but it
+  does leave the service down, which is why `rollback` across a major
+  version does not auto-start — it stops, restores `.prev`, and waits for
+  the operator to restore the pre-upgrade dump first.
 
 ### Documented install layout
 
@@ -173,6 +189,10 @@ and
   `ExecStart=... daemon -c /home/runner/runner-config.yml`, so the `.runner`
   registration file lives in `/home/runner`. `TimeoutStopSec=infinity` — the
   stock unit never gives up waiting for in-flight jobs on `systemctl stop`.
+  A unit that sets no `WorkingDirectory=` at all runs in `/` (systemd's own
+  default for a system service), so the script resolves `RUNNER_HOME` to
+  `/` for a loaded unit that omits it, and falls back to `/home/runner`
+  only when the unit is not found at all.
 - **`systemctl show UNIT -p PROP --value` has two shapes worth knowing.**
   `ExecStart` comes back as one record,
   `{ path=/usr/local/bin/forgejo ; argv[]=/usr/local/bin/forgejo web -c /x ;
@@ -261,7 +281,11 @@ and
   `install` runs (`install` unlinks and rewrites the destination, so a
   failed copy still needs `.prev`), and `STOPPED_SVC` is cleared only after
   the health check passes. A new code path between stop and health must
-  keep those assignments.
+  keep those assignments. `rollback --no-start`, and a rollback across a
+  major version, are the one deliberate exception: they leave the service
+  stopped on purpose, and they clear `STOPPED_SVC` only after printing the
+  restore-the-dump-then-start steps, so the stop is never silent even
+  though it is intentional.
 - **`eval` appears exactly once**, to turn the `Environment=` line from
   `systemctl show` back into an array. It is there because systemd emits
   that line as shell-quoted words and nothing else undoes that quoting
@@ -288,6 +312,12 @@ There is no Forgejo install on the development machine, so testing is split.
   behind; against an unresolvable host and confirm it dies with the
   transport-error message; and against a URL or stub that answers some
   other status and confirm it dies with the HTTP-status message.
+- **The key-refresh path, tested for real.** Point `GNUPGHOME` at a fresh,
+  empty directory (`mktemp -d`, `chmod 700`), skip `ensure_key`, and call
+  `fetch_and_verify` directly: confirm the log shows "refreshing the pinned
+  key", the key gets imported, and the second attempt passes. Then, in
+  that same empty `GNUPGHOME`, point `KEYSERVER` at an unresolvable host
+  and confirm it dies on the signature error instead of passing.
 - **Version parsers, tested against real output.** Download the binary and
   feed its `--version` output to `installed_forgejo` / `installed_runner`, or
   stub the binary with a one-line script that echoes the real string.
@@ -315,7 +345,23 @@ There is no Forgejo install on the development machine, so testing is split.
   unit's env at it to check that `app.ini` wins over `Environment=`/
   `--work-path` and warns on a mismatch, and call
   `resolve_forgejo_settings --rollback` with `FORGEJO_BIN` pointed at a
-  missing file to confirm only the binary check is skipped.
+  missing file to confirm only the binary check is skipped. Add a stub
+  runner unit with no `WorkingDirectory=` and confirm `RUNNER_HOME`
+  resolves to `/`; an unknown unit still falls back to `/home/runner`. A
+  relative operator override (for example `FORGEJO_CONFIG=tmp/etc/app.ini`,
+  `BACKUP_DIR=backups`, or `RUNNER_HOME=runner`) must make `settings` warn
+  and every other invocation die with the relative-path message.
+- **`rollback_needs_manual_start`, exercised directly from the sourced
+  definitions**, since `rollback` itself is never run on this machine. It
+  is `[[ $1 == forgejo && -n $2 && ${2%%.*} != "${3%%.*}" ]]`: exit status
+  0 ("manual start needed") only for Forgejo with a known current version
+  whose major differs from the previous one — including when the previous
+  version cannot be read, which counts as differing — and exit status 1
+  ("start as usual") for a matching major, an empty current version (the
+  binary is too damaged to report one), or the runner. `--no-start` is
+  handled by `rollback` itself before the function is ever called, not by
+  the function. Feed it these version-pair cases and check the exit
+  status each way.
 
 ## Review discipline
 
