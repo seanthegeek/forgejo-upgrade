@@ -24,6 +24,7 @@
 #   RUNNER_BIN         /usr/local/bin/forgejo-runner
 #   RUNNER_HOME        /home/runner            (holds the .runner registration file)
 #   RUNNER_CONFIG      unset; read from the -c flag in the unit's ExecStart
+#   TMPDIR             /tmp; holds the download, run from there once, not noexec
 #
 # Run `forgejo-upgrade.sh settings` to see every resolved value and where it
 # came from. Nothing is guessed silently: each value is printed with its source
@@ -122,7 +123,12 @@ KEYSERVER=hkps://keys.openpgp.org
 FORGEJO_REPO=https://code.forgejo.org/forgejo/forgejo
 RUNNER_REPO=https://code.forgejo.org/forgejo/runner
 
-WORKDIR=$(mktemp -d /tmp/forgejo-upgrade.XXXXXX)
+# Where the download and its signature are put. The downloaded binary is run
+# from here once, to check which version it really is before it is installed,
+# so this has to be on a filesystem that allows execution - a /tmp mounted
+# noexec does not. TMPDIR is the way to move it, and sudo passes TMPDIR through
+# only when it is given on sudo's own command line.
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/forgejo-upgrade.XXXXXX")
 
 # Only one upgrade at a time on this host, held by acquire_lock and released
 # by on_exit. /run is a root-only tmpfs that is cleared at boot, so a lock left
@@ -156,9 +162,15 @@ BINARY_REPLACED=0
 # overrides this run was given in front of it and the script path quoted, so
 # it can be pasted as it is.
 rollback_command() {
-  local overrides=$RUNNER_OVERRIDES
+  local overrides=$RUNNER_OVERRIDES prefix=""
   if [[ $STOPPED_KIND == forgejo ]]; then overrides=$FORGEJO_OVERRIDES; fi
-  printf '%s%q rollback %s\n' "$overrides" "$0" "$STOPPED_KIND"
+  # SUDO_USER means this run was started through sudo, the documented way, so
+  # the shell the operator pastes this command into is not root and rollback
+  # would refuse it. The overrides go after the sudo, not before it: sudo
+  # passes NAME=value words given on its own command line through to the
+  # command, but strips them out of the environment it inherits.
+  if [[ -n ${SUDO_USER:-} ]]; then prefix="sudo "; fi
+  printf '%s%s%q rollback %s\n' "$prefix" "$overrides" "$0" "$STOPPED_KIND"
 }
 
 on_exit() {
@@ -439,11 +451,38 @@ fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; 
   esac
 }
 
+require_exec_workdir() {
+  # The downloaded binary is run once, from $WORKDIR, to check which version it
+  # really is. A /tmp mounted noexec makes that run fail with "Permission
+  # denied" and exit 126, which reads as a broken download or the wrong
+  # architecture. Find out here, before anything is downloaded, with a two-line
+  # shell script of our own.
+  local probe="$WORKDIR/.exec-probe" rc=0
+  printf '#!/bin/sh\nexit 0\n' > "$probe" \
+    || die "could not write to the temporary directory $WORKDIR. Expected a writable directory for the download; set TMPDIR to a directory this host can write to and rerun. Nothing was installed"
+  chmod 755 "$probe" \
+    || die "could not make $probe executable. Set TMPDIR to a directory on a filesystem that allows execution and rerun. Nothing was installed"
+  "$probe" || rc=$?
+  # Left in place: on_exit removes the whole working directory anyway, and
+  # deleting it here would be one more command to check for no gain.
+  [[ $rc -eq 0 ]] \
+    || die "cannot run a program from $WORKDIR (exit $rc). The filesystem holding it is most likely mounted noexec, and the downloaded binary has to run from there once so this script can check its version before installing it. Set TMPDIR to a directory on a filesystem that allows execution - /var/tmp or /root, say - and rerun with it on the sudo command line, as in: sudo TMPDIR=/var/tmp $0 forgejo latest. Nothing was installed"
+}
+
 fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
   local base="$1/releases/download/v$3" f="$2" verdict
+  require_exec_workdir
   log "Downloading $f"
-  curl -q -fL --progress-bar -o "$WORKDIR/$f"     "$base/$f"
-  curl -q -fsSL            -o "$WORKDIR/$f.asc" "$base/$f.asc"
+  # Each command here is checked by hand rather than left to "set -e". Both
+  # callers run this function as new=$(fetch_and_verify ...), and bash turns
+  # errexit off inside a command substitution, so a failure that is not checked
+  # right here is simply skipped: a curl that could not download anything would
+  # carry on to the signature check and the operator would be told the
+  # signature could not be verified instead of that the download failed.
+  curl -q -fL --progress-bar -o "$WORKDIR/$f"     "$base/$f" \
+    || die "could not download $base/$f (curl exit $?). Expected the release asset for v$3; check that $1/releases lists v$3 with a $f asset and that this host can reach code.forgejo.org, then rerun. Nothing was installed"
+  curl -q -fsSL            -o "$WORKDIR/$f.asc" "$base/$f.asc" \
+    || die "could not download the signature $base/$f.asc (curl exit $?). Without it the downloaded file cannot be verified, and this script never installs a file it has not verified; check that $1/releases lists v$3 with a $f.asc asset and that this host can reach code.forgejo.org, then rerun. Nothing was installed"
 
   log "Verifying GPG signature"
   if ! gpg_valid_sig "$WORKDIR/$f.asc" "$WORKDIR/$f"; then
@@ -481,8 +520,23 @@ fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
     warn "no .sha256 published for $f (HTTP 404); relying on the GPG signature only"
   fi
 
-  chmod 755 "$WORKDIR/$f"
+  chmod 755 "$WORKDIR/$f" \
+    || die "could not make the downloaded $WORKDIR/$f executable, so its version cannot be checked and nothing was installed. Rerun, and if it keeps happening set TMPDIR to another directory"
   echo "$WORKDIR/$f"
+}
+
+require_prev_slot() {  # $1 = binary path; dies when $1.prev is not a plain file
+  # install_binary writes the binary it is replacing to exactly "$1.prev", and
+  # rollback reads it back from there. Anything else already sitting at that
+  # path changes what those two do: cp copies into a directory that is there,
+  # and mv would move the old binary into it. The -T and --remove-destination
+  # flags in install_binary make both refuse or replace instead, and this check
+  # says so before the service is stopped rather than after.
+  if [[ -L $1.prev || ( -e $1.prev && ! -f $1.prev ) ]]; then
+    # stat does not follow a symlink unless asked, so a link reports
+    # "symbolic link" here rather than the type of whatever it points at.
+    die "$1.prev is a $(stat -c %F "$1.prev"), not a plain file. This script keeps the binary it replaces at exactly that path and rollback reads it back from there, so that name cannot be anything else. Move whatever is at $1.prev out of the way and rerun. Nothing has been stopped"
+  fi
 }
 
 install_binary() {  # $1 = new file, $2 = destination
@@ -501,7 +555,16 @@ install_binary() {  # $1 = new file, $2 = destination
   # warning. An explicit "context" is never used: on a kernel without SELinux
   # cp refuses outright with "cannot preserve security context without an
   # SELinux-enabled kernel", which would break every non-SELinux host.
-  cp --preserve=all,xattr "$2" "$2.prev"
+  #
+  # "-T" makes "$2.prev" the destination itself rather than a directory to copy
+  # into: a directory left at that name would otherwise swallow the backup as
+  # "$2.prev/<name>", and the rollback would find nothing to put back.
+  # "--remove-destination" unlinks whatever is at that name first, so a symlink
+  # there is replaced by the backup instead of being written through, which
+  # would overwrite the unrelated file it points at. require_prev_slot already
+  # refused both before the service was stopped; these two flags mean a name
+  # that changed since then fails here rather than doing the wrong thing.
+  cp -T --remove-destination --preserve=all,xattr "$2" "$2.prev"
   # Set before install runs, not after it returns: install unlinks the
   # destination and writes a new file, so a failure part way (a full disk, say)
   # leaves a truncated binary behind. From here on the remedy is .prev, and
@@ -513,7 +576,10 @@ install_binary() {  # $1 = new file, $2 = destination
   # would quietly undo that during an upgrade. The ids are numeric on purpose:
   # stat prints UNKNOWN for a uid or gid with no passwd or group entry, and
   # "install -o UNKNOWN" would then fail with the service already stopped.
-  install -m "$(stat -c %a "$2")" -o "$(stat -c %u "$2")" -g "$(stat -c %g "$2")" "$1" "$2"
+  # "-T" is GNU install's --no-target-directory, for the same reason as on the
+  # copy above: the destination is this exact path, never a directory to put
+  # the file inside.
+  install -T -m "$(stat -c %a "$2")" -o "$(stat -c %u "$2")" -g "$(stat -c %g "$2")" "$1" "$2"
   # install unlinks the destination and writes a new file, so the file now in
   # place has no ACL, no extended attributes and the default security context:
   # the file capability, the ACL and the SELinux label the old binary carried
@@ -529,7 +595,8 @@ install_binary() {  # $1 = new file, $2 = destination
   # stopping is a binary that silently lost the capability it needs to bind
   # its port and will not come back up. BINARY_REPLACED is already 1 at this
   # point, so on_exit prints the journal and the rollback command.
-  cp --attributes-only --preserve=all,xattr --no-preserve=timestamps "$2.prev" "$2"
+  # "-T" again: both names here are exact paths, not directories.
+  cp -T --attributes-only --preserve=all,xattr --no-preserve=timestamps "$2.prev" "$2"
 }
 
 # --- settings ----------------------------------------------------------------
@@ -1176,6 +1243,9 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     if [[ $for_rollback -eq 0 ]]; then
       [[ -x $FORGEJO_BIN ]] \
         || die "no executable at $FORGEJO_BIN (from: $FORGEJO_BIN_SRC). This script upgrades an existing install; install Forgejo first (https://forgejo.org/docs/latest/admin/installation/binary/), or set FORGEJO_BIN to where it lives"
+      # Not for a rollback: that one reads $FORGEJO_BIN.prev itself, and has to
+      # run it and read its version before it will use it.
+      require_prev_slot "$FORGEJO_BIN"
     fi
     # Only the exit status matters; the "no such user" text is replaced by an
     # actionable message.
@@ -1394,13 +1464,16 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     if [[ $for_rollback -eq 0 ]]; then
       [[ -x $RUNNER_BIN ]] \
         || die "no executable at $RUNNER_BIN (from: $RUNNER_BIN_SRC). This script upgrades an existing install; install forgejo-runner first (https://forgejo.org/docs/latest/admin/actions/installation/binary/), or set RUNNER_BIN to where it lives"
+      # Not for a rollback: that one reads $RUNNER_BIN.prev itself, and has to
+      # run it and read its version before it will use it.
+      require_prev_slot "$RUNNER_BIN"
     fi
     if [[ -n $RUNNER_CONFIG && ! -r $RUNNER_CONFIG ]]; then
       warn "cannot read the runner config at $RUNNER_CONFIG (from: $RUNNER_CONFIG_SRC), so the registration file below is a guess. Set RUNNER_CONFIG if the daemon uses another file."
     fi
   fi
   if [[ $quiet -eq 0 ]]; then
-    log "forgejo-runner settings for $unit (override any with the env var):"
+    log "forgejo-runner settings for $unit (override any with the env var, except RUNNER_REG_FILE, which follows RUNNER_HOME and RUNNER_CONFIG):"
     setting_line RUNNER_SERVICE  "$RUNNER_SERVICE"             "$RUNNER_SERVICE_SRC"
     setting_line RUNNER_BIN      "$RUNNER_BIN"                 "$RUNNER_BIN_SRC"
     setting_line RUNNER_HOME     "$RUNNER_HOME"                "$RUNNER_HOME_SRC"
@@ -1731,6 +1804,11 @@ rollback() {
   esac
   [[ -x $bin.prev ]] \
     || die "no previous binary at $bin.prev to roll back to, so nothing was changed and $svc was left exactly as it was. This script keeps the binary it replaced at that path only until the next upgrade overwrites it, so there is nothing older to go back to here. To go back by hand: download the release you want from $repo/releases, check its signature, and install it over $bin. $restore"
+  # Checked before anything is stopped: the restore below moves $bin.prev to
+  # exactly $bin, and a directory sitting at that name is not something to move
+  # a binary onto.
+  [[ ! -d $bin ]] \
+    || die "$bin is a directory (or a link to one) rather than a file, and the previous binary would be moved to exactly that path. Nothing was changed and $svc was left exactly as it was. Move the directory at $bin out of the way, then rerun this rollback. $restore"
 
   # Read both versions before anything is stopped. The previous binary is the
   # one that will be running afterwards, so it has to run at all to be worth
@@ -1769,8 +1847,13 @@ rollback() {
   # this line would have on_exit say the binary was untouched. The rename is
   # within one directory, so it either happened or it did not, and on_exit
   # tells the two apart by whether .prev is still there.
+  #
+  # "-T" makes $bin the destination itself: a directory that appeared at that
+  # name since the check above fails the move rather than swallowing .prev as
+  # $bin/<name>. on_exit then still finds .prev and says the previous binary
+  # was not moved back.
   BINARY_REPLACED=2
-  mv -f "$bin.prev" "$bin"
+  mv -fT "$bin.prev" "$bin"
 
   if [[ $nostart -eq 1 ]]; then
     log "The previous binary is back in place at $bin, but $svc was left stopped on purpose: $reason"
@@ -1859,5 +1942,5 @@ case "${1:-}" in
   rollback) rollback "${2:-}" "${3:-}" ;;
   # The usage text is this script's own header comment. Adding a line to it
   # means moving the end of this range, which runs to the last header line.
-  *) sed -n '2,35p' "$0"; exit 1 ;;
+  *) sed -n '2,36p' "$0"; exit 1 ;;
 esac

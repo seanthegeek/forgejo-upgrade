@@ -76,7 +76,11 @@ that every collaborator picks them up the same way.
   was. The printed `rollback` command carries the overrides the run was
   given (`FORGEJO_OVERRIDES` / `RUNNER_OVERRIDES`, captured before any
   default is applied), shell-quoted, so it resolves the same install; `$0`
-  is quoted the same way.
+  is quoted the same way. It is prefixed with `sudo` when `SUDO_USER` is
+  set, since the run was then started through `sudo` and the shell the
+  operator pastes into is not root; the overrides go after the `sudo`,
+  because `sudo` passes `NAME=value` words from its own command line
+  through but strips them from the environment it inherits.
 - **Do not suppress errors blanketly.** `|| true`, `|| warn`, and
   `2>/dev/null` are for a specific failure you have decided is acceptable and
   can say why. In the script:
@@ -379,6 +383,26 @@ Every `#Lnn` line link below points at one of these four pins.
   stop by design, since the alternative is a binary that silently lost
   the capability it needs to bind its port, and `on_exit` prints the
   `rollback` remedy at that point.
+  Also measured with coreutils 9.7: a destination that is a directory is
+  treated as a directory to copy or move *into*, so a plain
+  `cp SRC DEST.prev` with a directory at `DEST.prev` leaves the backup at
+  `DEST.prev/<name>` and `mv -f DEST.prev DEST` with a directory at `DEST`
+  puts the previous binary inside it; and `cp` writes *through* a
+  destination symlink, overwriting the unrelated file it points at.
+  [`-T`](https://www.gnu.org/software/coreutils/manual/html_node/cp-invocation.html#cp--no-target-directory)
+  on `cp`, on `install` (there spelled `--no-target-directory` too) and on
+  `mv` makes the named path the destination itself, so a directory there
+  fails the operation with "cannot overwrite directory ... with
+  non-directory" instead,
+  and
+  [`--remove-destination`](https://www.gnu.org/software/coreutils/manual/html_node/cp-invocation.html#index-_002d_002dremove_002ddestination)
+  unlinks whatever entry is at the name first, so a symlink is replaced by
+  a regular file and its target is left alone. `install_binary` uses
+  `cp -T --remove-destination` for `.prev`, `install -T` for the new
+  binary and `cp -T` for the attribute copy; `rollback` uses `mv -fT`.
+  Before any of that, `require_prev_slot` refuses a `.prev` that is not a
+  plain file and `rollback` refuses a directory at the binary path, both
+  before the service is stopped.
 - **`curl` reads root's `~/.curlrc` unless `-q` is its first argument.**
   Checked with curl 8.18: a `.curlrc` saying `location` makes
   `curl -s -o /dev/null -w '%{http_code}' http://forgejo.org/` print `200`
@@ -392,9 +416,9 @@ Every `#Lnn` line link below points at one of these four pins.
 
 Where the script's user, path, and service defaults come from, per the
 stock unit files:
-<https://code.forgejo.org/forgejo/forgejo/raw/branch/forgejo/contrib/systemd/forgejo.service>
+<https://codeberg.org/forgejo/forgejo/raw/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/contrib/systemd/forgejo.service>
 and
-<https://code.forgejo.org/forgejo/runner/raw/branch/main/contrib/forgejo-runner.service>.
+<https://code.forgejo.org/forgejo/runner/raw/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service>.
 
 - **Server unit:**
   [`User=git`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/contrib/systemd/forgejo.service#L56),
@@ -564,6 +588,15 @@ and
   and `warn` write to stderr for this reason. A log line written to stdout
   inside `fetch_and_verify` ends up in the caller's `$(...)` and becomes part
   of a file path.
+- **`set -e` does not apply inside `$(...)`.** Bash turns errexit off in a
+  command substitution unless `inherit_errexit` is set, and this script does
+  not set it — doing so would change every substitution in the resolvers. So
+  a function whose value is returned on stdout and read that way
+  (`fetch_and_verify`, `latest_tag`, the `installed_*` functions) has to
+  check every command it runs itself, with `|| die` or an explicit status
+  test. A failure it does not check is silently skipped and the run carries
+  on with an empty or half-written file: a failed download used to reach the
+  signature check and be reported as an unverifiable signature.
 - **Every operation is safe to re-run.** Same version installed means "nothing
   to do", not an error. The key import checks the keyring first.
 - **Never leave the service stopped without saying so.** Any exit between
@@ -615,6 +648,19 @@ There is no Forgejo install on the development machine, so testing is split.
   behind; against an unresolvable host and confirm it dies with the
   transport-error message; and against a URL or stub that answers some
   other status and confirm it dies with the HTTP-status message.
+- **A download that cannot succeed, through `fetch_and_verify`.** Call it
+  for a version that does not exist (`0.0.0`, say) and confirm it dies with
+  the "could not download" message, not with anything about a signature:
+  bash drops `set -e` inside the `$(...)` both callers use, so an unchecked
+  `curl` failure would fall through to the GPG check and be reported as an
+  unverifiable signature.
+- **The exec probe, against a `noexec` filesystem.** `unshare -Urm` gives a
+  mount namespace without root:
+  `unshare -Urm bash -c 'mount --bind D D && mount -o remount,bind,noexec D D
+  && ...'` over a directory under `tmp/`. Point `TMPDIR` at it when sourcing
+  the definitions and confirm `fetch_and_verify` dies with the `TMPDIR`
+  message before it downloads anything; with an ordinary directory the probe
+  passes and the download proceeds.
 - **The key-refresh path, tested for real.** Point `GNUPGHOME` at a fresh,
   empty directory (`mktemp -d`, `chmod 700`), skip `ensure_key`, and call
   `fetch_and_verify` directly: confirm the log shows "refreshing the pinned
@@ -713,7 +759,16 @@ There is no Forgejo install on the development machine, so testing is split.
   that `.prev` has the old contents with the same attribute and ACL.
   `install -o`/`-g` with your own ids needs no root. This is the one
   part of the install sequence that can run here; the stop, backup,
-  start and health check still cannot.
+  start and health check still cannot. Also: a directory at `.prev` must
+  make `install_binary` fail with both that directory and the destination
+  untouched; a symlink at `.prev` pointing at an unrelated file must end
+  with `.prev` a regular file holding the old binary and the link's target
+  unchanged; and `require_prev_slot` must pass for an absent or regular
+  `.prev` and die for a directory or a symlink, a dangling one included,
+  naming the type it found. `rollback`'s refusal of a directory at the
+  binary path is reviewed, not run, since `rollback` is never run here, and
+  `mv -fT`'s behaviour on a directory and on a symlink was measured by hand
+  (see the Facts section).
 - **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
   on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
   fails; swap in one that prints `200` and confirm it passes. This needs
@@ -753,13 +808,14 @@ There is no Forgejo install on the development machine, so testing is split.
   `BINARY_REPLACED=1`, with `FORGEJO_SERVICE`, `FORGEJO_BIN` and a
   `BACKUP_DIR` containing a space in the environment when sourcing, put a
   stub `journalctl` on `PATH`, and let the shell exit: the printed
-  `rollback` line must start with those three overrides shell-quoted and
-  the rollback command must come before any `systemctl start`/`status`
-  hint. Repeat with `STOPPED_KIND=runner` and a `RUNNER_BIN` override and
-  confirm only the runner overrides appear. Then set `BINARY_REPLACED=2`
-  with a file at `STOPPED_BIN.prev` and confirm the message says it was not
-  moved back and gives the rollback command; remove the file and confirm the
-  back-in-place wording.
+  `rollback` line must start with those three overrides shell-quoted, or
+  with `sudo` followed by them when `SUDO_USER` is set in the environment
+  when sourcing, and the rollback command must come before any
+  `systemctl start`/`status` hint. Repeat with `STOPPED_KIND=runner` and a
+  `RUNNER_BIN` override and confirm only the runner overrides appear. Then
+  set `BINARY_REPLACED=2` with a file at `STOPPED_BIN.prev` and confirm the
+  message says it was not moved back and gives the rollback command; remove
+  the file and confirm the back-in-place wording.
 - **`FORGEJO_DB_TYPE`, against stub `app.ini` files.** One stub with
   `[database] DB_TYPE = postgres` and one with `sqlite3`; an unreadable
   config must resolve to unknown, not a guess. Since the upgrade prompt and

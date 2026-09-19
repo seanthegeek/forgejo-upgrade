@@ -64,7 +64,10 @@ A server upgrade runs these steps in order:
    running that native dump (`pg_dump`, `mysqldump`) is the operator's own job.
 10. Copy the old binary to `<name>.prev`, install the new one, keeping its
     owner, group, mode, ACL, extended attributes such as file capabilities set
-    with `setcap`, and SELinux context.
+    with `setcap`, and SELinux context. Anything already at `<name>.prev` that
+    is not a plain file — a directory, or a symlink — is refused before the
+    service is stopped, because that name has to hold the binary a rollback
+    reads back.
 11. Start the service and poll
     [`/api/healthz`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/routers/web/web.go#L395)
     for up to a minute, until it
@@ -76,8 +79,9 @@ Any failure once the service has been stopped — the health check timing out, o
 an error in an earlier step such as the backup — prints the last 40 lines of the
 journal and the exact command to recover, repeating any `FORGEJO_*`, `RUNNER_*`,
 or `BACKUP_DIR` override the run was given so that `rollback` resolves the same
-install. `rollback` stops the service, restores the previous binary, starts it,
-and confirms the service is active again before reporting success.
+install, and prefixed with `sudo` when the run was started through `sudo`.
+`rollback` stops the service, restores the previous binary, starts it, and
+confirms the service is active again before reporting success.
 
 A runner upgrade is the same minus the queue flush, backup, and doctor. The
 runner's registration lives in its
@@ -125,7 +129,9 @@ host, all inside the window the service is stopped for.
 ### Before the first upgrade
 
 Run `sudo forgejo-upgrade settings` and read each line. Every value can be
-overridden with the environment variable it is labelled with.
+overridden with the environment variable it is labelled with, except
+`RUNNER_REG_FILE`, which the script derives from `RUNNER_HOME` and
+`RUNNER_CONFIG` and does not read from the environment.
 
 ## Configuration
 
@@ -145,6 +151,17 @@ binary is executable, or the operator set its service or binary variable
 `check` prints "not installed" with "-" for the latest version instead of asking
 [the release API](https://code.forgejo.org/api/swagger#/repository/repoGetLatestRelease)
 about it.
+
+The download and its signature go into a directory made under `TMPDIR`, which
+defaults to `/tmp`. The downloaded binary is run from there once, to check
+which version it really is before it is installed, so on a host whose `/tmp` is
+mounted `noexec` set `TMPDIR` to a directory on a filesystem that allows
+execution. `sudo` passes `TMPDIR` through only when it is given on `sudo`'s own
+command line:
+
+```sh
+sudo TMPDIR=/var/tmp forgejo-upgrade forgejo latest
+```
 
 ### Forgejo settings
 
