@@ -294,9 +294,10 @@ upgrade, because the zip's SQL is not a safe restore — see Forgejo's own
 — then run `systemctl start` yourself. Pass `--no-start` to force that same
 stopped-and-waiting behavior on any rollback, patch or major. Rollback does not
 require the current binary to be intact — it only needs the `.prev` file, which
-is what a failed install leaves behind. That file has to run and report a
-version the script recognises, checked before anything is stopped; otherwise it
-is not the binary an upgrade set aside and the rollback refuses.
+is what a failed install leaves behind. That file has to be a plain file — not
+a symbolic link, not a directory — and it has to run and report a version the
+script recognises, all checked before anything is stopped; otherwise it is not
+the binary an upgrade set aside and the rollback refuses.
 
 ### Knowing when to run it
 

@@ -1243,8 +1243,9 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
     if [[ $for_rollback -eq 0 ]]; then
       [[ -x $FORGEJO_BIN ]] \
         || die "no executable at $FORGEJO_BIN (from: $FORGEJO_BIN_SRC). This script upgrades an existing install; install Forgejo first (https://forgejo.org/docs/latest/admin/installation/binary/), or set FORGEJO_BIN to where it lives"
-      # Not for a rollback: that one reads $FORGEJO_BIN.prev itself, and has to
-      # run it and read its version before it will use it.
+      # Inside this block because resolving with --rollback skips the whole
+      # block; rollback calls require_prev_slot itself, right after resolving,
+      # and before anything is stopped.
       require_prev_slot "$FORGEJO_BIN"
     fi
     # Only the exit status matters; the "no such user" text is replaced by an
@@ -1464,8 +1465,9 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
     if [[ $for_rollback -eq 0 ]]; then
       [[ -x $RUNNER_BIN ]] \
         || die "no executable at $RUNNER_BIN (from: $RUNNER_BIN_SRC). This script upgrades an existing install; install forgejo-runner first (https://forgejo.org/docs/latest/admin/actions/installation/binary/), or set RUNNER_BIN to where it lives"
-      # Not for a rollback: that one reads $RUNNER_BIN.prev itself, and has to
-      # run it and read its version before it will use it.
+      # Inside this block because resolving with --rollback skips the whole
+      # block; rollback calls require_prev_slot itself, right after resolving,
+      # and before anything is stopped.
       require_prev_slot "$RUNNER_BIN"
     fi
     if [[ -n $RUNNER_CONFIG && ! -r $RUNNER_CONFIG ]]; then
@@ -1802,6 +1804,11 @@ rollback() {
              restore="There is no dump to restore for the runner, and its registration in $RUNNER_REG_FILE survives a binary swap" ;;
     *) die "rollback forgejo|runner [--no-start]" ;;
   esac
+  # The same plain-file rule an upgrade applies, and for the same reason: the
+  # -x check just below follows a symbolic link, so a link at $bin.prev would
+  # pass it, and the "mv -fT" further down would then put the link itself in
+  # front of the service rather than the binary an upgrade set aside.
+  require_prev_slot "$bin"
   [[ -x $bin.prev ]] \
     || die "no previous binary at $bin.prev to roll back to, so nothing was changed and $svc was left exactly as it was. This script keeps the binary it replaced at that path only until the next upgrade overwrites it, so there is nothing older to go back to here. To go back by hand: download the release you want from $repo/releases, check its signature, and install it over $bin. $restore"
   # Checked before anything is stopped: the restore below moves $bin.prev to

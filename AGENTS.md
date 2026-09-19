@@ -402,7 +402,12 @@ Every `#Lnn` line link below points at one of these four pins.
   binary and `cp -T` for the attribute copy; `rollback` uses `mv -fT`.
   Before any of that, `require_prev_slot` refuses a `.prev` that is not a
   plain file and `rollback` refuses a directory at the binary path, both
-  before the service is stopped.
+  before the service is stopped. `rollback` runs `require_prev_slot` itself
+  as its first check, because resolving with `--rollback` skips the
+  resolvers' copy of it and its own `[[ -x $bin.prev ]]` test follows a
+  symbolic link: without that check an executable link at `.prev` would
+  pass, and the `mv -fT` would install the link itself in front of the
+  service rather than the binary an upgrade set aside.
 - **`curl` reads root's `~/.curlrc` unless `-q` is its first argument.**
   Checked with curl 8.18: a `.curlrc` saying `location` makes
   `curl -s -o /dev/null -w '%{http_code}' http://forgejo.org/` print `200`
@@ -630,7 +635,7 @@ and
   paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
   behaviors and that is fine.
 - **The usage text is the script's own header comment**, printed with
-  `sed -n '2,35p'`. Adding a line to the header means updating that range.
+  `sed -n '2,36p'`. Adding a line to the header means updating that range.
 
 ## Testing
 
@@ -765,10 +770,17 @@ There is no Forgejo install on the development machine, so testing is split.
   with `.prev` a regular file holding the old binary and the link's target
   unchanged; and `require_prev_slot` must pass for an absent or regular
   `.prev` and die for a directory or a symlink, a dangling one included,
-  naming the type it found. `rollback`'s refusal of a directory at the
+  naming the type it found. A symlink pointing at an *executable* file is
+  the case worth keeping a test for: `[[ -x ]]` alone passes it, so check
+  that `require_prev_slot` still dies on it with `[[ -x ]]` shown passing
+  on the same link as a control. `rollback`'s refusal of a directory at the
   binary path is reviewed, not run, since `rollback` is never run here, and
   `mv -fT`'s behaviour on a directory and on a symlink was measured by hand
-  (see the Facts section).
+  (see the Facts section). Its refusal of a `.prev` that is not a plain
+  file is the same `require_prev_slot` already exercised above, called from
+  `rollback` before its own `-x` check; that the call is there, inside
+  `rollback` and ahead of the `systemctl stop`, is checked structurally by
+  line number rather than by running the command.
 - **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
   on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
   fails; swap in one that prints `200` and confirm it passes. This needs
