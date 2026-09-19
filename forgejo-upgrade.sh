@@ -1686,6 +1686,30 @@ Check FORGEJO_USER and FORGEJO_BIN, or set SKIP_BACKUP=1 to upgrade without a du
     local dump
     dump="$BACKUP_DIR/forgejo-$cur-$(date +%Y%m%d-%H%M%S).zip"
     log "Backing up to $dump"
+    # Create the archive empty and at mode 600 first, then let Forgejo write
+    # into it. Forgejo opens the file with a plain create, so its mode is
+    # whatever the umask allows - commonly 644 - and it tightens the file to
+    # 600 only after a dump that finished (cmd/dump.go: os.Create near the
+    # start, os.Chmod at the very end). A dump stopped part way, by a fatal
+    # error or a Ctrl-C, leaves the partial archive behind at that loose mode,
+    # and the archive holds app.ini and a copy of the database, in a
+    # BACKUP_DIR whose other users are the operator's business and not this
+    # script's. Forgejo does not refuse a file that is already there: its open
+    # truncates one, and truncating a file never changes its mode, so the 600
+    # set here is the mode the archive keeps whatever happens next. It is
+    # created as FORGEJO_USER so the file belongs to the account that writes
+    # it, and so this works on storage where root has no write access of its
+    # own. A umask around the dump would have been the shorter fix, but it
+    # would have to survive runuser's PAM session or sudo's own umask handling
+    # in sudoers, and this depends on neither. install is GNU coreutils, which
+    # this script already needs. A partial archive is deliberately left where
+    # it is: it is mode 600, and the operator may want to look at it.
+    #
+    # Run the same way as the "test -w" on this directory before the stop: a
+    # plain run_as from wherever the script was started. Only as_forgejo needs
+    # the cd into the work path, because it runs the Forgejo binary itself.
+    run_as "$FORGEJO_USER" install -m 600 /dev/null "$dump" \
+      || die "could not create the empty archive $dump as $FORGEJO_USER, which is done before the dump so that an interrupted dump cannot leave the archive readable by anyone else. $BACKUP_DIR was writable by that account when it was checked before the stop, so check whether its filesystem has filled up, been remounted read-only, or gone away. $FORGEJO_SERVICE is stopped and the binary is untouched, so the recovery printed below is a plain start; to upgrade without a dump, rerun with SKIP_BACKUP=1"
     as_forgejo dump --file "$dump"
   else
     warn "SKIP_BACKUP=1, no dump taken"

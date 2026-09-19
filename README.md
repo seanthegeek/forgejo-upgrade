@@ -62,6 +62,12 @@ A server upgrade runs these steps in order:
    restore either of them. So the script warns about this before stopping
    anything and, on a major upgrade, asks whether a native dump has been taken;
    running that native dump (`pg_dump`, `mysqldump`) is the operator's own job.
+   The script creates the archive itself first, as `FORGEJO_USER` and with
+   mode `0600`, because Forgejo
+   [creates it at the umask and tightens it to `0600` only after a successful
+   dump](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L419-L421),
+   so an interrupted dump cannot leave a world-readable partial archive of
+   `app.ini` and the database behind.
 10. Copy the old binary to `<name>.prev`, install the new one, keeping its
     owner, group, mode, ACL, extended attributes such as file capabilities set
     with `setcap`, and SELinux context. Anything already at `<name>.prev` that

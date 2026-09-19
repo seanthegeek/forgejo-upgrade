@@ -358,6 +358,31 @@ Every `#Lnn` line link below points at one of these four pins.
   stopping anything when the database is not SQLite, gates the
   major-upgrade confirmation on a native dump having been taken, and
   words the rollback hints to match.
+- **`forgejo dump` creates the archive at the umask and only chmods it to
+  0600 on success.** The file is made with
+  [`os.Create`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L304),
+  so its mode is whatever the process umask allows, commonly 0644;
+  [`app.ini` goes into the zip](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L334-L338)
+  next to the database copy; and the
+  [`os.Chmod` to `0o600`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L419-L421)
+  runs only after the archive is finished. Only an archiving error
+  [removes the file](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L414);
+  every other `fatal` between the create and the chmod, and any interrupt,
+  leaves the partial archive in place at the umask's mode, holding
+  `app.ini` and database data in a `BACKUP_DIR` the operator may share.
+  There is no refusal for a file that already exists — `os.Create`
+  truncates — and the
+  [`.zip` suffix is stripped and re-appended](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L254-L260),
+  so `--file X.zip` opens exactly `X.zip`. So the script creates that
+  file itself first, empty, mode 0600, as `FORGEJO_USER`, and Forgejo's
+  own open truncates into it: a truncating open never changes an existing
+  file's mode, measured under `umask 022` with `install -m 600 /dev/null f`
+  (GNU coreutils 9.7, and uutils 0.8.0 which is what `install` happens to
+  be on this development machine) followed by a truncating write from the
+  shell and from a Python `open(f, 'w')`: the file stayed at 0600, while
+  the same write with no pre-creation gave 0644. A umask around the dump
+  was not used: it would have to survive `runuser`'s PAM session or
+  `sudo`'s sudoers `umask` handling, and this depends on neither.
 - **`cp -p` and `install` drop file capabilities and other extended
   attributes.** Measured today with GNU coreutils 9.7: `cp -p` copies
   mode, owner, timestamps and the POSIX ACL but no other extended
@@ -781,6 +806,16 @@ There is no Forgejo install on the development machine, so testing is split.
   `rollback` before its own `-x` check; that the call is there, inside
   `rollback` and ahead of the `systemctl stop`, is checked structurally by
   line number rather than by running the command.
+- **The dump archive's pre-creation, exercised under `tmp/` without root.**
+  The dump itself is never run here — it needs a Forgejo install and a
+  stopped service — so what is tested is the primitive and the placement.
+  Under `umask 022`: `install -m 600 /dev/null f`, then a truncating write
+  into `f` (what Forgejo's `os.Create` does), must leave `f` at mode 600
+  holding the new content; the same write with no pre-creation, as a
+  control, must give 644. Then check structurally, by line number and
+  failing loudly on zero matches, that the pre-creation line sits inside
+  `upgrade_forgejo`, after its `systemctl stop` and immediately before the
+  `as_forgejo dump --file "$dump"` line.
 - **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
   on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
   fails; swap in one that prints `200` and confirm it passes. This needs
