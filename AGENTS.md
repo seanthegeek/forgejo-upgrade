@@ -775,7 +775,7 @@ There is no Forgejo install on the development machine, so testing is split.
   that `require_prev_slot` still dies on it with `[[ -x ]]` shown passing
   on the same link as a control. `rollback`'s refusal of a directory at the
   binary path is reviewed, not run, since `rollback` is never run here, and
-  `mv -fT`'s behaviour on a directory and on a symlink was measured by hand
+  `mv -fT`'s behavior on a directory and on a symlink was measured by hand
   (see the Facts section). Its refusal of a `.prev` that is not a plain
   file is the same `require_prev_slot` already exercised above, called from
   `rollback` before its own `-x` check; that the call is there, inside

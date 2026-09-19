@@ -8,8 +8,10 @@
     "blanketly",
     "cfgbase",
     "cfgroot",
+    "curlrc",
     "Cxxxx",
     "dsrc",
+    "errexit",
     "ERRSIG",
     "EXPKEYSIG",
     "EXPSIG",
@@ -28,9 +30,10 @@
     "LOCALNETWORKS",
     "mktemp",
     "mysqldump",
+    "noexec",
     "nostart",
     "openpgp",
-    "orgejo",
+    "patsub",
     "pipefail",
     "regfile",
     "REVKEYSIG",
@@ -48,5 +51,8 @@
     "Tunables",
     "VALIDSIG",
     "xattr"
+  ],
+  "cSpell.ignoreRegExpList": [
+    "/\\[Ff\\]orgejo/g"
   ]
 }

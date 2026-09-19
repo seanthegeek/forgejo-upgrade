@@ -1828,7 +1828,7 @@ rollback() {
   # Parsed before the stop, like the run check above, so nothing has changed
   # when this stops.
   [[ -n $prev ]] \
-    || die "$bin.prev runs but does not report a version this script recognises: '${out%%$'\n'*}'. Expected a line like '$example', so this is not the binary an upgrade set aside, nothing was changed, and $svc was left exactly as it was. Download the release you want from $repo/releases, check its signature, and install it over $bin by hand. $restore"
+    || die "$bin.prev runs but does not report a version this script recognizes: '${out%%$'\n'*}'. Expected a line like '$example', so this is not the binary an upgrade set aside, nothing was changed, and $svc was left exactly as it was. Download the release you want from $repo/releases, check its signature, and install it over $bin by hand. $restore"
   # The installed binary, by contrast, is the one a rollback exists to undo: it
   # may be half-written or the wrong architecture. A failure here is expected
   # and leaves the version unknown rather than stopping the rollback.
