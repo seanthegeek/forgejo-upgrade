@@ -74,9 +74,10 @@ A server upgrade runs these steps in order:
 
 Any failure once the service has been stopped — the health check timing out, or
 an error in an earlier step such as the backup — prints the last 40 lines of the
-journal and the exact command to recover. `rollback` stops the service, restores
-the previous binary, starts it, and confirms the service is active again before
-reporting success.
+journal and the exact command to recover, repeating any `FORGEJO_*`, `RUNNER_*`,
+or `BACKUP_DIR` override the run was given so that `rollback` resolves the same
+install. `rollback` stops the service, restores the previous binary, starts it,
+and confirms the service is active again before reporting success.
 
 A runner upgrade is the same minus the queue flush, backup, and doctor. The
 runner's registration lives in its

@@ -60,6 +60,28 @@ FORGEJO_DB_TYPE=${FORGEJO_DB_TYPE:-}
 # The unit's Environment= settings, passed to the binary when the script runs
 # it as FORGEJO_USER. Filled in by resolve_forgejo_settings.
 FORGEJO_ENV=()
+
+# The operator's own overrides, captured before any default below is applied
+# and shell-quoted, so that the recovery command on_exit prints runs rollback
+# against the same install this run resolved. Without them, an upgrade driven
+# by FORGEJO_SERVICE=... or FORGEJO_BIN=... would print a rollback command that
+# reads the stock unit instead and could touch a different install. Each is
+# "NAME=value " pairs ready to go in front of a command, or empty.
+FORGEJO_OVERRIDES=""
+RUNNER_OVERRIDES=""
+for _name in FORGEJO_SERVICE FORGEJO_BIN FORGEJO_USER FORGEJO_CONFIG \
+             FORGEJO_WORK_PATH FORGEJO_URL FORGEJO_SOCKET FORGEJO_DB_TYPE \
+             BACKUP_DIR; do
+  if [[ -n ${!_name:-} ]]; then
+    FORGEJO_OVERRIDES+="$_name=$(printf '%q' "${!_name}") "
+  fi
+done
+for _name in RUNNER_SERVICE RUNNER_BIN RUNNER_HOME RUNNER_CONFIG; do
+  if [[ -n ${!_name:-} ]]; then
+    RUNNER_OVERRIDES+="$_name=$(printf '%q' "${!_name}") "
+  fi
+done
+unset _name
 # Recorded before the default is applied, since the assignments below would
 # otherwise erase whether the operator actually set these, and the settings
 # block needs to say "env" or "default" for them like it does for everything
@@ -130,6 +152,15 @@ STOPPED_BIN=""   # path of the binary for that service
 # partly, if the copy itself failed) and .prev holds the old one, 2 = rolled back
 BINARY_REPLACED=0
 
+# The rollback command for the service on_exit is reporting, with the
+# overrides this run was given in front of it and the script path quoted, so
+# it can be pasted as it is.
+rollback_command() {
+  local overrides=$RUNNER_OVERRIDES
+  if [[ $STOPPED_KIND == forgejo ]]; then overrides=$FORGEJO_OVERRIDES; fi
+  printf '%s%q rollback %s\n' "$overrides" "$0" "$STOPPED_KIND"
+}
+
 on_exit() {
   local rc=$?
   if [[ -n $STOPPED_SVC ]]; then
@@ -138,8 +169,12 @@ on_exit() {
       || warn "could not read the journal; try it by hand: journalctl -u $STOPPED_SVC -n 40"
     case $BINARY_REPLACED in
       1) warn "a new binary was written to $STOPPED_BIN (the copy may not have completed) and the previous one is kept at $STOPPED_BIN.prev"
-         warn "try: systemctl start $STOPPED_SVC"
-         warn "if that fails, put the previous binary back with: $0 rollback $STOPPED_KIND" ;;
+         warn "put the previous binary back with: $(rollback_command)"
+         # The one case where rollback is not the first move: the health check
+         # gave up on a new binary that is still starting, most often a
+         # database migration on a big instance. The journal shows that, and
+         # then the right thing is to let it finish, not to stop it.
+         warn "if the journal above shows the new binary is still starting up (a database migration can take longer than the health check waits), let it finish and check with: systemctl status $STOPPED_SVC" ;;
       # 2 means a rollback already moved the previous binary back over the new
       # one, so no .prev file is left and rolling back again is not possible.
       2) warn "the previous binary is back in place at $STOPPED_BIN and no $STOPPED_BIN.prev remains"
@@ -200,8 +235,11 @@ acquire_lock() {
     fi
     die "another forgejo-upgrade run holds the lock $LOCK_DIR ($state). Two runs at once could overwrite the .prev copy that a rollback needs. Wait for it to finish; if that process is gone, remove the stale lock with: rm -r $LOCK_DIR, then rerun"
   fi
-  printf '%s\n' "$$" > "$LOCK_DIR/pid"
+  # Owned from the moment the directory exists, before the pid is written: if
+  # that write fails (a full /run, say), set -e exits, and on_exit must still
+  # remove the directory or every later run would stop at a lock nobody holds.
   LOCK_HELD=1
+  printf '%s\n' "$$" > "$LOCK_DIR/pid"
 }
 
 arch() {
@@ -216,7 +254,7 @@ arch() {
 
 latest_tag() {  # $1 = repo URL -> prints e.g. 16.0.5
   local api=${1/code.forgejo.org\//code.forgejo.org/api/v1/repos/}
-  curl -fsSL "$api/releases/latest" \
+  curl -q -fsSL "$api/releases/latest" \
     | sed -n 's/.*"tag_name":"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1
 }
 
@@ -374,7 +412,7 @@ fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; 
   # failure, a TLS error, a timeout, or a 500 must stop the upgrade rather than
   # pass for "not published" and quietly leave the checksum unverified.
   local code body
-  code=$(curl -sSL -o "$2" -w '%{http_code}' "$1") \
+  code=$(curl -q -sSL -o "$2" -w '%{http_code}' "$1") \
     || die "could not download $1 (curl exit $?). Expected either the release's .sha256 file or a 404 saying there is none; check this host's network access to code.forgejo.org and rerun"
   case "$code" in
     200) return 0 ;;
@@ -393,8 +431,8 @@ fetch_sha256() {  # $1 = url, $2 = file to write -> 0 fetched, 1 not published; 
 fetch_and_verify() {  # $1 = repo, $2 = asset filename, $3 = version  -> path
   local base="$1/releases/download/v$3" f="$2" verdict
   log "Downloading $f"
-  curl -fL --progress-bar -o "$WORKDIR/$f"     "$base/$f"
-  curl -fsSL            -o "$WORKDIR/$f.asc" "$base/$f.asc"
+  curl -q -fL --progress-bar -o "$WORKDIR/$f"     "$base/$f"
+  curl -q -fsSL            -o "$WORKDIR/$f.asc" "$base/$f.asc"
 
   log "Verifying GPG signature"
   if ! gpg_valid_sig "$WORKDIR/$f.asc" "$WORKDIR/$f"; then
@@ -627,7 +665,11 @@ ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $
       rep=$(ini_get "$file" "" "$name" "$((round + 1))")
     fi
     [[ -n $rep ]] || break
-    val=${val//"$ref"/$rep}
+    # The replacement is quoted on purpose: bash's patsub_replacement option,
+    # on by default since 5.2, turns an unquoted "&" in the replacement into
+    # the matched text, so a value holding "&" would put the reference back
+    # instead of the value and the loop would chase it until the round cap.
+    val=${val//"$ref"/"$rep"}
     round=$((round + 1))
     # A replacement that still carries a reference of its own is one the
     # lookup above could not finish - an unknown name, or two keys that name
@@ -1377,8 +1419,12 @@ healthz() {  # $1 = seconds to allow this one attempt (default 5) -> 0 when the 
   # Connection refused and a timeout are still expected while the service is
   # starting, and curl's own message is dropped for them; curl failing then
   # makes this function fail, as before.
+  # -q goes first because curl only honours it there: it stops curl reading a
+  # .curlrc, and the script runs as root, whose .curlrc could say "location"
+  # and turn that same 302 into the login page's 200 again. Every curl call in
+  # this script passes it for the same reason.
   local code
-  local -a opts=(-s -o /dev/null -w '%{http_code}' --max-time "${1:-5}")
+  local -a opts=(-q -s -o /dev/null -w '%{http_code}' --max-time "${1:-5}")
   if [[ -n $FORGEJO_SOCKET ]]; then
     opts+=(--unix-socket "$FORGEJO_SOCKET")
   fi

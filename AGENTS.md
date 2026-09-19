@@ -73,7 +73,10 @@ that every collaborator picks them up the same way.
   was observed, and the remedy. Any exit that leaves a service stopped or
   unhealthy must print the journal and the exact command to recover, which is
   `systemctl start` when the binary was not replaced and `rollback` when it
-  was.
+  was. The printed `rollback` command carries the overrides the run was
+  given (`FORGEJO_OVERRIDES` / `RUNNER_OVERRIDES`, captured before any
+  default is applied), shell-quoted, so it resolves the same install; `$0`
+  is quoted the same way.
 - **Do not suppress errors blanketly.** `|| true`, `|| warn`, and
   `2>/dev/null` are for a specific failure you have decided is acceptable and
   can say why. In the script:
@@ -373,6 +376,14 @@ Every `#Lnn` line link below points at one of these four pins.
   stop by design, since the alternative is a binary that silently lost
   the capability it needs to bind its port, and `on_exit` prints the
   `rollback` remedy at that point.
+- **`curl` reads root's `~/.curlrc` unless `-q` is its first argument.**
+  Checked with curl 8.18: a `.curlrc` saying `location` makes
+  `curl -s -o /dev/null -w '%{http_code}' http://forgejo.org/` print `200`
+  instead of `301`, and `-q` anywhere but first is ignored. The script runs
+  as root, so a `.curlrc` there would silently turn a reverse proxy's 302
+  into a 200 in `healthz`, and could change how the other calls treat a 404
+  or TLS. Every `curl` call therefore starts with `-q`, per
+  [curl's manual](https://curl.se/docs/manpage.html).
 
 ### Documented install layout
 
@@ -620,7 +631,10 @@ There is no Forgejo install on the development machine, so testing is split.
   section; nested references resolve; a cycle terminates; values without
   `%(` and with a lone `%` are unchanged. The two-key cycle is the case
   that found the first design's depth counter did not terminate in usable
-  time; a cap is not a termination proof, run the pathological input.
+  time; a cap is not a termination proof, run the pathological input. A
+  referenced value containing `&` (say `HTTP_ADDR = /run/a&b/forgejo.sock`)
+  must come back with the `&` intact; unquoted, bash's
+  `patsub_replacement` turns it into the reference again.
 - **Version parsers, tested against real output.** Download the binary and
   feed its `--version` output to `installed_forgejo` / `installed_runner`, or
   stub the binary with a one-line script that echoes the real string.
@@ -687,7 +701,10 @@ There is no Forgejo install on the development machine, so testing is split.
 - **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
   on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
   fails; swap in one that prints `200` and confirm it passes. This needs
-  no new dependency such as a local HTTP server.
+  no new dependency such as a local HTTP server. Also run it with
+  `CURL_HOME` pointing at a directory whose `.curlrc` says `location` and
+  `FORGEJO_URL=http://codeberg.org`: the real answer is a 302 to https, and
+  `healthz` must fail rather than report the 200 found after the redirect.
 - **`rollback_needs_manual_start`, exercised directly from the sourced
   definitions**, since `rollback` itself is never run on this machine. It
   is `[[ $1 == forgejo && -n $2 && ${2%%.*} != "${3%%.*}" ]]`: exit status
@@ -705,7 +722,20 @@ There is no Forgejo install on the development machine, so testing is split.
   still running; overwrite the `pid` file with a pid that is not running
   (for example `999999`) and confirm the message changes to "not running"
   and gives the `rm -r` remedy; confirm the directory is gone once the
-  shell that acquired it exits, since `on_exit` releases it.
+  shell that acquired it exits, since `on_exit` releases it. Then, with
+  `umask 0777` so that `mkdir` succeeds but the pid write fails, run
+  `acquire_lock` in a fresh `bash` and confirm the lock directory is gone
+  afterwards: the lock is owned from the moment `mkdir` succeeds, not from
+  the pid write.
+- **The recovery command from `on_exit`, from the sourced definitions.** Set
+  `STOPPED_SVC`, `STOPPED_KIND=forgejo`, `STOPPED_BIN` and
+  `BINARY_REPLACED=1`, with `FORGEJO_SERVICE`, `FORGEJO_BIN` and a
+  `BACKUP_DIR` containing a space in the environment when sourcing, put a
+  stub `journalctl` on `PATH`, and let the shell exit: the printed
+  `rollback` line must start with those three overrides shell-quoted and
+  the rollback command must come before any `systemctl start`/`status`
+  hint. Repeat with `STOPPED_KIND=runner` and a `RUNNER_BIN` override and
+  confirm only the runner overrides appear.
 - **`FORGEJO_DB_TYPE`, against stub `app.ini` files.** One stub with
   `[database] DB_TYPE = postgres` and one with `sqlite3`; an unreadable
   config must resolve to unknown, not a guess. Since the upgrade prompt and
