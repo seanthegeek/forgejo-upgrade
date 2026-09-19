@@ -30,7 +30,8 @@ A server upgrade runs these steps in order:
 
 1. Resolve every setting from the environment, the systemd unit, and `app.ini`,
    then print what it found and where each value came from.
-2. Resolve the version and refuse silently to reinstall the same one.
+2. Resolve the version and, if that version is already installed, log "already
+   on ..., nothing to do" and exit 0 without touching anything.
 3. Warn and ask for confirmation on a major version change.
 4. [Import the Forgejo release key](https://forgejo.org/download/#installation-from-binary)
    if it is not already in the root keyring.
