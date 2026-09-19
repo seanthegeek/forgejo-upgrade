@@ -87,9 +87,12 @@ that every collaborator picks them up the same way.
     replace the real exit status.
   - `on_exit`: `rm -rf "$LOCK_DIR" || warn` — like the `WORKDIR` removal, a
     cleanup failure must not replace the real exit status.
-  - `acquire_lock`: `mkdir "$LOCK_DIR" 2>/dev/null` — `mkdir` on an existing
-    directory is the failure, and that failure is the signal that another
-    run already holds the lock, not an error to hide.
+  - `acquire_lock`: `err=$(mkdir "$LOCK_DIR" 2>&1)` — output capture, not
+    suppression. `mkdir` on an existing directory is the failure that means
+    another run holds the lock, and its message is dropped for that case in
+    favour of one that names the holder; when no directory is there
+    afterwards, `mkdir` could not create anything (a missing or read-only
+    `/run`, no space, a plain file at the path) and its message is shown.
   - `acquire_lock`: `kill -0 "$pid" 2>/dev/null` — only "is that pid alive"
     is asked, to decide whether the stale-lock message says "running" or
     "not running".
@@ -425,7 +428,13 @@ and
   ignore_errors=no ; ... }`, so the program and its arguments have to be
   pulled back out of that record rather than read as separate fields.
   [`Environment`](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Environment=)
-  comes back as one space-separated `KEY=VALUE ...` line.
+  comes back as one space-separated `KEY=VALUE ...` line. When a loaded
+  unit's `ExecStart` does not come back in that `{ path=... }` shape, the
+  resolvers do not fall back to the documented binary path: a stale file
+  there would be upgraded while the service kept running something else, and
+  the run would report success. `settings` warns and shows the default as a
+  guess; `forgejo`, `runner` and `rollback` stop before anything is touched
+  and ask for `FORGEJO_BIN`/`RUNNER_BIN`.
 - **The `argv[]` in that record is not quoted, so it is lossy.** Checked
   on systemd 259: `--setenv` and a spaced argument produce
   `argv[]=/bin/echo -c /path with spaces/app.ini plain`, with nothing to
@@ -565,12 +574,16 @@ and
   `install_binary` sets `BINARY_REPLACED` after `.prev` exists and before
   `install` runs (`install` unlinks and rewrites the destination, so a
   failed copy still needs `.prev`), and `STOPPED_SVC` is cleared only after
-  the health check passes. A new code path between stop and health must
-  keep those assignments. `rollback --no-start`, and a rollback across a
-  major version, are the one deliberate exception: they leave the service
-  stopped on purpose, and they clear `STOPPED_SVC` only after both of the
-  restore-then-start instruction lines have printed, so an interrupt
-  between those two lines still gets the journal and the remedy from
+  the health check passes. `rollback` sets `BINARY_REPLACED=2` *before* its
+  `mv`, not after, because bash runs the `INT`/`TERM` traps between commands
+  and a Ctrl-C between the rename and the assignment would have `on_exit`
+  call the binary untouched; `on_exit` tells a rename that happened from one
+  that did not by whether `.prev` still exists. A new code path between stop
+  and health must keep those assignments. `rollback --no-start`, and a
+  rollback across a major version, are the one deliberate exception: they
+  leave the service stopped on purpose, and they clear `STOPPED_SVC` only
+  after both of the restore-then-start instruction lines have printed, so an
+  interrupt between those two lines still gets the journal and the remedy from
   `on_exit`, and the stop is never silent even though it is intentional.
 - **One run at a time.** `acquire_lock` runs right after the root check in
   `upgrade_forgejo`, `upgrade_runner`, and `rollback`, before anything is
@@ -688,7 +701,10 @@ There is no Forgejo install on the development machine, so testing is split.
   "must be absolute path" wording while `forgejo` and `rollback forgejo`
   die on it; an app.ini whose `LOCAL_ROOT_URL` uses `%(...)s` references
   must show the expanded URL in `settings`; `same_dir` on a directory
-  and a symlink to it must agree.
+  and a symlink to it must agree. Add stub units that are loaded but whose
+  `ExecStart` comes back empty or in another shape, and confirm `settings`
+  warns and marks the binary as a guess while `resolve_forgejo_settings` /
+  `resolve_runner_settings` without `--tolerant` die, `--rollback` included.
 - **`install_binary`, exercised from the sourced definitions under
   `tmp/`, without root.** Set a `user.*` extended attribute and an ACL
   on a fake old binary with a 2020 modification time, install a fake new
@@ -715,7 +731,9 @@ There is no Forgejo install on the development machine, so testing is split.
   binary is too damaged to report one), or the runner. `--no-start` is
   handled by `rollback` itself before the function is ever called, not by
   the function. Feed it these version-pair cases and check the exit
-  status each way.
+  status each way. `rollback` itself refuses a `.prev` whose version does
+  not parse before stopping anything, so the empty-previous case in the
+  function is a guard, not a path it reaches.
 - **The lock, from the sourced definitions, with `LOCK_DIR` pointed under
   `tmp/`.** A first `acquire_lock` succeeds; a second call, in a subshell so
   it does not exit the test, dies naming the pid recorded by the first as
@@ -726,7 +744,10 @@ There is no Forgejo install on the development machine, so testing is split.
   `umask 0777` so that `mkdir` succeeds but the pid write fails, run
   `acquire_lock` in a fresh `bash` and confirm the lock directory is gone
   afterwards: the lock is owned from the moment `mkdir` succeeds, not from
-  the pid write.
+  the pid write. Point `LOCK_DIR` at a path whose parent does not exist, and
+  at a plain file, and confirm both die with the "could not create the lock
+  directory" message quoting `mkdir`'s own, not the "another run holds the
+  lock" one; an existing directory must still give the latter.
 - **The recovery command from `on_exit`, from the sourced definitions.** Set
   `STOPPED_SVC`, `STOPPED_KIND=forgejo`, `STOPPED_BIN` and
   `BINARY_REPLACED=1`, with `FORGEJO_SERVICE`, `FORGEJO_BIN` and a
@@ -735,7 +756,10 @@ There is no Forgejo install on the development machine, so testing is split.
   `rollback` line must start with those three overrides shell-quoted and
   the rollback command must come before any `systemctl start`/`status`
   hint. Repeat with `STOPPED_KIND=runner` and a `RUNNER_BIN` override and
-  confirm only the runner overrides appear.
+  confirm only the runner overrides appear. Then set `BINARY_REPLACED=2`
+  with a file at `STOPPED_BIN.prev` and confirm the message says it was not
+  moved back and gives the rollback command; remove the file and confirm the
+  back-in-place wording.
 - **`FORGEJO_DB_TYPE`, against stub `app.ini` files.** One stub with
   `[database] DB_TYPE = postgres` and one with `sqlite3`; an unreadable
   config must resolve to unknown, not a guess. Since the upgrade prompt and

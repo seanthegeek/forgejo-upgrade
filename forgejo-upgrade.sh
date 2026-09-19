@@ -175,17 +175,24 @@ on_exit() {
          # database migration on a big instance. The journal shows that, and
          # then the right thing is to let it finish, not to stop it.
          warn "if the journal above shows the new binary is still starting up (a database migration can take longer than the health check waits), let it finish and check with: systemctl status $STOPPED_SVC" ;;
-      # 2 means a rollback already moved the previous binary back over the new
-      # one, so no .prev file is left and rolling back again is not possible.
-      2) warn "the previous binary is back in place at $STOPPED_BIN and no $STOPPED_BIN.prev remains"
-         warn "read the journal above, then start the service with: systemctl start $STOPPED_SVC"
-         # on_exit cannot tell for certain that this is the server rather than
-         # the runner, so the remedy is offered against what the journal says.
-         # FORGEJO_DB_TYPE is whatever the resolver found earlier in this
-         # run; when it found nothing, restore_hint uses the cautious
-         # wording, which covers an unknown database as well as an external
-         # one.
-         warn "if the journal says the database is for a newer Forgejo, the data has to go back before that start (see https://forgejo.org/docs/latest/admin/upgrade/#backup): $(restore_hint)" ;;
+      # 2 means a rollback is moving, or has moved, the previous binary back
+      # over the new one, so no .prev file is left and rolling back again is
+      # not possible.
+      2) if [[ -e $STOPPED_BIN.prev ]]; then
+           # rollback marks this state just before its rename, so .prev still
+           # being there means the rename never ran: nothing was moved.
+           warn "the previous binary is still at $STOPPED_BIN.prev and was not moved back. Run the rollback again: $(rollback_command)"
+         else
+           warn "the previous binary is back in place at $STOPPED_BIN and no $STOPPED_BIN.prev remains"
+           warn "read the journal above, then start the service with: systemctl start $STOPPED_SVC"
+           # on_exit cannot tell for certain that this is the server rather than
+           # the runner, so the remedy is offered against what the journal says.
+           # FORGEJO_DB_TYPE is whatever the resolver found earlier in this
+           # run; when it found nothing, restore_hint uses the cautious
+           # wording, which covers an unknown database as well as an external
+           # one.
+           warn "if the journal says the database is for a newer Forgejo, the data has to go back before that start (see https://forgejo.org/docs/latest/admin/upgrade/#backup): $(restore_hint)"
+         fi ;;
       *) warn "the binary was not changed. Start the service again with: systemctl start $STOPPED_SVC" ;;
     esac
   fi
@@ -209,12 +216,16 @@ need_root() { [[ $EUID -eq 0 ]] || die "run as root (sudo)"; }
 # Taken by every command that changes a binary: forgejo, runner, and rollback.
 # check and settings only read, so they never lock.
 acquire_lock() {
-  local pid="" state
+  local pid="" state err=""
   # mkdir on a directory that already exists fails, and that failure is the
-  # whole signal: another run got here first. Its own message would just
-  # repeat the path, so it is dropped in favour of the one below, which says
-  # who holds the lock and what to do.
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  # whole signal: another run got here first. But mkdir also fails when it
+  # cannot create anything - a missing or read-only /run, no space left, a
+  # plain file at this path - and then nobody holds a lock and the "wait or
+  # rm -r" advice below would be wrong. Its message is kept for that case and
+  # a directory at the path is what says "held".
+  if ! err=$(mkdir "$LOCK_DIR" 2>&1); then
+    [[ -d $LOCK_DIR ]] \
+      || die "could not create the lock directory $LOCK_DIR, so no run holds it and this one cannot take it. mkdir said: '$err'. Its parent has to be a writable directory with free space, and nothing but a directory may sit at $LOCK_DIR; fix that, then rerun"
     if [[ -r $LOCK_DIR/pid ]]; then
       # A file with no final newline makes read return non-zero although it
       # has filled pid in, and an empty file leaves pid empty; both cases are
@@ -878,6 +889,8 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # there is no install here to complain about and a plainer line is printed
   # instead.
   local unit_warn=""
+  # Same for a unit whose ExecStart could not be read; printed with it.
+  local bin_warn=""
   local -a argv=()
 
   if [[ -z $FORGEJO_SERVICE ]]; then
@@ -930,6 +943,18 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   elif [[ -n $exec_path ]]; then
     FORGEJO_BIN=$exec_path
     FORGEJO_BIN_SRC="unit ExecStart"
+  elif [[ $loaded -eq 1 ]]; then
+    # systemd knows the unit, so it runs some binary, but ExecStart= did not
+    # come back in the shape unit_exec_path reads. The documented default is
+    # no answer here: if a stale copy sits at that path, an upgrade would
+    # replace a file the service never runs, restart the unchanged service,
+    # and report success. So the value is only shown, and the operator is
+    # asked for the real path; settings warns, everything else stops here,
+    # before anything is touched.
+    FORGEJO_BIN=/usr/local/bin/forgejo
+    FORGEJO_BIN_SRC="default; $unit's ExecStart could not be read"
+    bin_warn="systemd knows $unit but its ExecStart= could not be read back (systemctl show printed: '$(unit_prop "$FORGEJO_SERVICE" ExecStart)'), so the binary it runs is unknown and $FORGEJO_BIN is only a guess. Set FORGEJO_BIN to the binary $unit runs"
+    if [[ $tolerant -eq 0 ]]; then die "$bin_warn"; fi
   else
     FORGEJO_BIN=/usr/local/bin/forgejo
     FORGEJO_BIN_SRC=$dsrc
@@ -953,6 +978,9 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   fi
   if [[ -n $unit_warn && $quiet -eq 0 ]]; then
     warn "$unit_warn"
+  fi
+  if [[ -n $bin_warn && $quiet -eq 0 ]]; then
+    warn "$bin_warn"
   fi
 
   if [[ -n $FORGEJO_USER ]]; then
@@ -1234,6 +1262,8 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   # Held back until the binary has been resolved, for the reason given in
   # resolve_forgejo_settings.
   local unit_warn=""
+  # Same for a unit whose ExecStart could not be read; printed with it.
+  local bin_warn=""
   local -a argv=()
 
   if [[ -z $RUNNER_SERVICE ]]; then
@@ -1269,6 +1299,12 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   elif [[ -n $exec_path ]]; then
     RUNNER_BIN=$exec_path
     RUNNER_BIN_SRC="unit ExecStart"
+  elif [[ $loaded -eq 1 ]]; then
+    # Same rule as for Forgejo's binary, see there.
+    RUNNER_BIN=/usr/local/bin/forgejo-runner
+    RUNNER_BIN_SRC="default; $unit's ExecStart could not be read"
+    bin_warn="systemd knows $unit but its ExecStart= could not be read back (systemctl show printed: '$(unit_prop "$RUNNER_SERVICE" ExecStart)'), so the binary it runs is unknown and $RUNNER_BIN is only a guess. Set RUNNER_BIN to the binary $unit runs"
+    if [[ $tolerant -eq 0 ]]; then die "$bin_warn"; fi
   else
     RUNNER_BIN=/usr/local/bin/forgejo-runner
     RUNNER_BIN_SRC=$dsrc
@@ -1290,6 +1326,9 @@ resolve_runner_settings() {  # --tolerant: never die, --quiet: do not print the 
   fi
   if [[ -n $unit_warn && $quiet -eq 0 ]]; then
     warn "$unit_warn"
+  fi
+  if [[ -n $bin_warn && $quiet -eq 0 ]]; then
+    warn "$bin_warn"
   fi
 
   if [[ -n $RUNNER_HOME ]]; then
@@ -1667,7 +1706,7 @@ rollback_needs_manual_start() {  # $1 = kind, $2 = current version or empty, $3 
 rollback() {
   need_root
   acquire_lock
-  local bin svc kind repo restore parse nostart=0 reason="" prev="" cur="" out
+  local bin svc kind repo restore parse example nostart=0 reason="" prev="" cur="" out
   case "${2:-}" in
     "")         : ;;
     --no-start) nostart=1; reason="--no-start was given" ;;
@@ -1681,10 +1720,12 @@ rollback() {
     forgejo) resolve_forgejo_settings --rollback
              bin=$FORGEJO_BIN; svc=$FORGEJO_SERVICE; kind=forgejo
              repo=$FORGEJO_REPO; parse=parse_forgejo_version
+             example='forgejo version 16.0.4'
              restore="If the version you are undoing changed the database schema, put the database back before starting the service: $(restore_hint)" ;;
     runner)  resolve_runner_settings --rollback
              bin=$RUNNER_BIN;  svc=$RUNNER_SERVICE;  kind=runner
              repo=$RUNNER_REPO; parse=parse_runner_version
+             example='forgejo-runner version v13.1.0'
              restore="There is no dump to restore for the runner, and its registration in $RUNNER_REG_FILE survives a binary swap" ;;
     *) die "rollback forgejo|runner [--no-start]" ;;
   esac
@@ -1697,20 +1738,23 @@ rollback() {
   out=$("$bin.prev" --version 2>&1) \
     || die "$bin.prev does not run (exit $?): '${out%%$'\n'*}'. The binary this rollback would put back has to run to be worth restoring, so nothing was changed and $svc was left exactly as it was. Download the release you want from $repo/releases, check its signature, and install it over $bin by hand. $restore"
   prev=$("$parse" "$out")
+  # A binary that runs but does not say which release it is cannot be the
+  # one this script set aside, so it is not put in front of the service.
+  # Parsed before the stop, like the run check above, so nothing has changed
+  # when this stops.
+  [[ -n $prev ]] \
+    || die "$bin.prev runs but does not report a version this script recognises: '${out%%$'\n'*}'. Expected a line like '$example', so this is not the binary an upgrade set aside, nothing was changed, and $svc was left exactly as it was. Download the release you want from $repo/releases, check its signature, and install it over $bin by hand. $restore"
   # The installed binary, by contrast, is the one a rollback exists to undo: it
   # may be half-written or the wrong architecture. A failure here is expected
   # and leaves the version unknown rather than stopping the rollback.
   if [[ -x $bin ]]; then
     if out=$("$bin" --version 2>&1); then cur=$("$parse" "$out"); fi
   fi
-  log "Rolling back $bin from ${cur:-unknown} to ${prev:-unknown}"
+  log "Rolling back $bin from ${cur:-unknown} to $prev"
 
   if [[ $nostart -eq 0 ]] && rollback_needs_manual_start "$kind" "$cur" "$prev"; then
     nostart=1
-    reason="going from $cur back to ${prev:-an unreadable version} crosses a major version, and Forgejo refuses to start an older release on a database a newer one has already migrated - it would log that the database is for a newer Forgejo and exit at once"
-    if [[ -z $prev ]]; then
-      reason="$reason (the previous binary's version could not be read, so it is treated as a different major version)"
-    fi
+    reason="going from $cur back to $prev crosses a major version, and Forgejo refuses to start an older release on a database a newer one has already migrated - it would log that the database is for a newer Forgejo and exit at once"
   fi
 
   # Tracked before the stop for the same reason as in the upgrades.
@@ -1718,10 +1762,15 @@ rollback() {
   STOPPED_KIND="$kind"
   STOPPED_BIN="$bin"
   systemctl stop "$svc"
-  mv -f "$bin.prev" "$bin"
-  # 2, not 1: the move consumed the .prev file, so if this rollback fails there
+  # 2, not 1: the move consumes the .prev file, so if this rollback fails there
   # is no older binary left and on_exit must not suggest rolling back again.
+  # Set before the move, not after: bash runs the INT and TERM traps between
+  # two commands, so a Ctrl-C landing after the rename had happened but before
+  # this line would have on_exit say the binary was untouched. The rename is
+  # within one directory, so it either happened or it did not, and on_exit
+  # tells the two apart by whether .prev is still there.
   BINARY_REPLACED=2
+  mv -f "$bin.prev" "$bin"
 
   if [[ $nostart -eq 1 ]]; then
     log "The previous binary is back in place at $bin, but $svc was left stopped on purpose: $reason"

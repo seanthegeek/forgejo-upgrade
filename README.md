@@ -151,7 +151,7 @@ about it.
 | Variable | Read from | Default |
 | --- | --- | --- |
 | `FORGEJO_SERVICE` | — | `forgejo` |
-| `FORGEJO_BIN` | `ExecStart=` program | [`/usr/local/bin/forgejo`](https://forgejo.org/docs/latest/admin/installation/binary/#install-forgejo-and-git-create-git-user) |
+| `FORGEJO_BIN` | `ExecStart=` program; a loaded unit whose `ExecStart=` cannot be read back stops `forgejo` and `rollback` and warns in `settings` rather than falling back to the default | [`/usr/local/bin/forgejo`](https://forgejo.org/docs/latest/admin/installation/binary/#install-forgejo-and-git-create-git-user) |
 | `FORGEJO_USER` | `User=` | `root` for a loaded unit that sets no `User=` ([systemd's default](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#User=)); [`git`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/contrib/systemd/forgejo.service#L56) only when the unit is not found |
 | `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` (relative to `WorkingDirectory=`, or `/` if unset) | [Forgejo's own default](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L93-L207): `<work path>/custom/conf/app.ini`, work path from `--work-path` or `Environment=` (`FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`), else the binary's directory; `custom` is assumed since `FORGEJO_CUSTOM`/`--custom-path` are not read; [`/etc/forgejo/app.ini`](https://forgejo.org/docs/latest/admin/installation/binary/#create-directories-forgejo-will-use) only if the unit is not found |
 | `FORGEJO_WORK_PATH` | `--work-path`/`-w` in `ExecStart=`, then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=` (the flag wins, [as it does for Forgejo](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L177-L178)), then [`WORK_PATH` in `app.ini`](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#overall-default), which replaces the unit's value when set; `WorkingDirectory=` is not consulted; a relative value from any of these sources is refused, because Forgejo itself [refuses to start on one](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L157) (`settings` warns, `forgejo` and `rollback` stop); a unit value and an `app.ini` value naming the same directory through different paths [are not a conflict](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L195-L199) | unset; Forgejo then uses the directory holding the binary, with a warning |
@@ -193,7 +193,7 @@ in front of Forgejo.
 | Variable | Read from | Default |
 | --- | --- | --- |
 | `RUNNER_SERVICE` | — | `forgejo-runner` |
-| `RUNNER_BIN` | `ExecStart=` program | [`/usr/local/bin/forgejo-runner`](https://forgejo.org/docs/latest/admin/actions/installation/binary/#downloading-and-installing-the-binary) |
+| `RUNNER_BIN` | `ExecStart=` program; a loaded unit whose `ExecStart=` cannot be read back stops `runner` and `rollback` and warns in `settings` rather than falling back to the default | [`/usr/local/bin/forgejo-runner`](https://forgejo.org/docs/latest/admin/actions/installation/binary/#downloading-and-installing-the-binary) |
 | `RUNNER_HOME` | `WorkingDirectory=` | `/` for a loaded unit that sets no `WorkingDirectory=` ([systemd's default](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#WorkingDirectory=)); [`/home/runner`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service#L12) only when the unit is not found |
 | `RUNNER_CONFIG` | [`-c`/`--config` in `ExecStart=`](https://forgejo.org/docs/latest/admin/actions/installation/binary/#configuration) | unset; the guide says "There is no default configuration file location", so the script has no fallback |
 
@@ -277,7 +277,9 @@ upgrade, because the zip's SQL is not a safe restore — see Forgejo's own
 — then run `systemctl start` yourself. Pass `--no-start` to force that same
 stopped-and-waiting behavior on any rollback, patch or major. Rollback does not
 require the current binary to be intact — it only needs the `.prev` file, which
-is what a failed install leaves behind.
+is what a failed install leaves behind. That file has to run and report a
+version the script recognises, checked before anything is stopped; otherwise it
+is not the binary an upgrade set aside and the rollback refuses.
 
 ### Knowing when to run it
 
