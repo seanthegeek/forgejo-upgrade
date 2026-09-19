@@ -440,6 +440,35 @@ live. If Forgejo writes its
 [log](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#log-log)
 elsewhere, add that path too.
 
+This profile assumes Forgejo listens only on unprivileged ports, which is the
+default:
+[`HTTP_PORT`](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#server-server)
+is `3000`, with
+[a reverse proxy](https://forgejo.org/docs/latest/admin/setup/reverse-proxy/)
+in front on 80 and 443, and the built-in SSH server is off
+([`START_SSH_SERVER`](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#server-server)
+defaults to `false`). If Forgejo itself binds a port below 1024 —
+`HTTP_PORT = 443`, say, or the built-in SSH server on port 22 — this drop-in
+stops it: the empty
+[`CapabilityBoundingSet=`](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#CapabilityBoundingSet=)
+removes `CAP_NET_BIND_SERVICE` from every capability set, and
+`NoNewPrivileges=true` means a file capability set on the binary with
+`setcap` is not honored at `execve` either, so the restart below fails with
+"permission denied" on the port and the journal says so. In that case,
+replace the drop-in's last line with these two, which grant the one
+capability through systemd itself, so no `setcap` on the binary is needed:
+
+```ini
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+```
+
+[What the script does](#what-the-script-does) keeps a `setcap` file
+capability across an upgrade for installs that rely on one without this
+profile; under this profile,
+[`AmbientCapabilities=`](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#AmbientCapabilities=)
+is what does the work instead.
+
 `/home/git` is there for SSH. Unless Forgejo runs its built-in SSH server, it
 manages `authorized_keys` under
 [`SSH_ROOT_PATH`](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#server-server),
