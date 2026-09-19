@@ -440,7 +440,19 @@ install_binary() {  # $1 = new file, $2 = destination
   # Both callers refuse to run when nothing is installed, so the destination
   # always exists and there is always a previous binary worth keeping.
   log "Keeping previous binary at $2.prev"
-  cp -p "$2" "$2.prev"
+  # Not "cp -p": that keeps the mode, the owner, the timestamps and the POSIX
+  # ACL, but it drops every other extended attribute - including
+  # security.capability, which is where a file capability granted with setcap
+  # lives. A Forgejo allowed to bind port 443 with cap_net_bind_service would
+  # lose that permission in the copy, so the binary kept for a rollback would
+  # no longer be the binary that was working. "all" adds the rest of the
+  # extended attributes and, on a kernel that has SELinux, the security
+  # context, and skips the context quietly on a kernel that does not. Naming
+  # "xattr" a second time makes a failed attribute copy an error instead of a
+  # warning. An explicit "context" is never used: on a kernel without SELinux
+  # cp refuses outright with "cannot preserve security context without an
+  # SELinux-enabled kernel", which would break every non-SELinux host.
+  cp --preserve=all,xattr "$2" "$2.prev"
   # Set before install runs, not after it returns: install unlinks the
   # destination and writes a new file, so a failure part way (a full disk, say)
   # leaves a truncated binary behind. From here on the remedy is .prev, and
@@ -453,6 +465,22 @@ install_binary() {  # $1 = new file, $2 = destination
   # stat prints UNKNOWN for a uid or gid with no passwd or group entry, and
   # "install -o UNKNOWN" would then fail with the service already stopped.
   install -m "$(stat -c %a "$2")" -o "$(stat -c %u "$2")" -g "$(stat -c %g "$2")" "$1" "$2"
+  # install unlinks the destination and writes a new file, so the file now in
+  # place has no ACL, no extended attributes and the default security context:
+  # the file capability, the ACL and the SELinux label the old binary carried
+  # are all gone. This copies them back from .prev, which is that old binary
+  # untouched. --attributes-only leaves the new binary's contents alone, and
+  # --no-preserve=timestamps leaves the date install just gave it, so the file
+  # says when it was installed rather than carrying the old binary's date. A
+  # source with no extended attributes at all is not an error; cp exits 0.
+  #
+  # A failure here stops the upgrade on purpose. There is no getcap or
+  # getfattr to check the result with on a minimal host and this script adds
+  # no dependency, so cp's exit status is the whole check. The alternative to
+  # stopping is a binary that silently lost the capability it needs to bind
+  # its port and will not come back up. BINARY_REPLACED is already 1 at this
+  # point, so on_exit prints the journal and the rollback command.
+  cp --attributes-only --preserve=all,xattr --no-preserve=timestamps "$2.prev" "$2"
 }
 
 # --- settings ----------------------------------------------------------------
@@ -518,7 +546,7 @@ argv_opt() {  # $1 = --long, $2 = -s (may be ""), then -- then the argv words
   return 0
 }
 
-ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $3 = key
+ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $3 = key, $4 = expansion round (used by ini_get itself)
   # Reads one value out of an ini file with sed, so the script still needs
   # nothing an operator would have to install. Good enough for the handful of
   # [server] keys the health check needs, not a general ini parser.
@@ -529,7 +557,7 @@ ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $
   # configProviderLoadOptions). "tail -n 1" rather than cutting the captured
   # text up, because a last match with an empty value - "WORK_PATH =" - has to
   # survive, and command substitution drops the empty line it prints.
-  local file=$1 section=$2 key=$3 raw
+  local file=$1 section=$2 key=$3 round=${4:-0} raw val ref name rep
   [[ -r $file ]] || return 0
   if [[ -n $section ]]; then
     # The range runs from the section header to the next one; sed starts
@@ -545,9 +573,73 @@ ini_get() {  # $1 = file, $2 = section ("" for the keys before the first one), $
   [[ -n $raw ]] || return 0
   # Drop a trailing " ; comment" or " # comment", then trailing spaces and any
   # surrounding quotes.
-  printf '%s\n' "$raw" \
+  val=$(printf '%s\n' "$raw" \
     | sed -e 's/[[:space:]][;#].*$//' -e 's/[[:space:]]*$//' \
-          -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/"
+          -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/")
+
+  # Now expand %(NAME)s references, which is what Forgejo sees. Every value it
+  # reads goes through go-ini's Key.transformValue (gopkg.in/ini.v1 v1.67.3,
+  # the version Forgejo pins), and Forgejo's own configuration cheat sheet
+  # documents LOCAL_ROOT_URL = %(PROTOCOL)s://%(HTTP_ADDR)s:%(HTTP_PORT)s/ as
+  # the default, so an operator who writes that form is on a documented path.
+  # Without this the health check would be handed the literal text.
+  #
+  # Nothing to expand is the common case and costs nothing to spot.
+  if [[ $val != *'%('* ]]; then
+    printf '%s\n' "$val"
+    return 0
+  fi
+  # Each round replaces the first reference, the way go-ini does: look the name
+  # up in this same section, and in the keys before the first section when it
+  # is not there - or when it names the key being read, which go-ini also sends
+  # to the default section so that a key cannot expand into itself. Keys are
+  # matched here without regard to case, so that comparison ignores case too.
+  # The referenced value is read back through ini_get, so it is expanded in its
+  # own section on the way, which is what go-ini's nk.String() does.
+  #
+  # Only a name made of letters, digits, and underscores is expanded: the name
+  # is handed back to this function and ends up in a sed pattern, and no real
+  # Forgejo key has any other character in it. A reference whose name holds
+  # anything else is left exactly as written.
+  #
+  # The round counter is passed down and stops the expansion at 99, leaving
+  # whatever is left as written. It is there for a pathological file - A =
+  # %(B)s with B = %(A)s - which would otherwise never settle. go-ini has no
+  # such guard and would recurse on that file until it ran out of stack, so
+  # Forgejo would not start on it at all; the point here is only that this
+  # script must not hang.
+  while [[ $round -lt 99 && $val =~ %\(([A-Za-z0-9_]+)\)s ]]; do
+    ref=${BASH_REMATCH[0]}
+    name=${BASH_REMATCH[1]}
+    rep=""
+    if [[ -z $section || ${name^^} != "${key^^}" ]]; then
+      rep=$(ini_get "$file" "$section" "$name" "$((round + 1))")
+    fi
+    # This function returns nothing both for a key that is not there and for a
+    # key set to nothing, so an empty answer is read as "not in this section"
+    # and the keys before the first section are asked next, and an empty answer
+    # from there as "nowhere at all", which leaves the reference as written and
+    # stops. go-ini tells those two apart and would put an empty string in
+    # place of a key that exists but is empty; that is a deliberate
+    # approximation here, and it cannot arise for the handful of keys this
+    # script reads.
+    if [[ -z $rep && -n $section ]]; then
+      rep=$(ini_get "$file" "" "$name" "$((round + 1))")
+    fi
+    [[ -n $rep ]] || break
+    val=${val//"$ref"/$rep}
+    round=$((round + 1))
+    # A replacement that still carries a reference of its own is one the
+    # lookup above could not finish - an unknown name, or two keys that name
+    # each other - so it is put in place and the expansion stops there rather
+    # than trying that same reference again from this section. Without this, a
+    # pair of keys referring to each other would fan out into a fresh lookup at
+    # every round left, which is work measured in powers of two rather than the
+    # ninety-nine steps the counter suggests. A value whose own expansion
+    # finished never comes back with a "%(" in it.
+    if [[ $rep == *'%('* ]]; then break; fi
+  done
+  printf '%s\n' "$val"
 }
 
 yaml_get() {  # $1 = file, $2 = top-level key, $3 = key indented under it
@@ -590,6 +682,50 @@ require_abs() {  # $1 = name, $2 = value, $3 = 1 to warn instead of dying
   if [[ -z $2 || $2 == /* ]]; then return 0; fi
   local msg="$1=$2 is a relative path. The checks before the stop run from this directory and the commands after it from the work path, so they would name different files; set $1 to an absolute path"
   if [[ ${3:-0} -eq 0 ]]; then die "$msg"; else warn "$msg"; fi
+}
+
+require_abs_work_path() {  # $1 = value, $2 = where it came from, $3 = 1 to warn instead of dying
+  # A relative Forgejo work path is refused wherever it came from, because
+  # Forgejo refuses it too. InitWorkPathAndCfgProvider
+  # (modules/setting/path.go) checks each of its three sources and calls
+  # log.Fatal on a relative one - it never resolves it against the unit's
+  # WorkingDirectory= or anything else - so a relative value cannot be what
+  # the running daemon is using, and the dump and doctor runs this script
+  # makes as the Forgejo account would be refused the same way. That is what
+  # makes this different from the relative --config handled further down,
+  # which Forgejo really does put through filepath.Abs against the directory
+  # the daemon runs in.
+  if [[ -z $1 || $1 == /* ]]; then return 0; fi
+  local said fix
+  case "$2" in
+    *--work-path*)
+      said="--work-path must be absolute path"
+      fix="the unit's ExecStart" ;;
+    *FORGEJO_WORK_DIR*)
+      said="FORGEJO_WORK_DIR (work path) must be absolute path"
+      fix="the unit's Environment=" ;;
+    *GITEA_WORK_DIR*)
+      said="GITEA_WORK_DIR (work path) must be absolute path"
+      fix="the unit's Environment=" ;;
+    *)
+      said="WORK_PATH in \"$FORGEJO_CONFIG\" must be absolute path"
+      fix="app.ini" ;;
+  esac
+  local msg="the Forgejo work path $1 (from: $2) is a relative path. Forgejo itself will not start on one: it exits with '$said'. So this is not the path the running server is using, and the dump and doctor runs this script makes would be refused for the same reason. Make it an absolute path where it is set, in $fix"
+  if [[ ${3:-0} -eq 0 ]]; then die "$msg"; else warn "$msg"; fi
+}
+
+same_dir() {  # $1, $2 = two paths -> 0 when they are the same directory
+  # How Forgejo compares the work path from the unit with WORK_PATH in
+  # app.ini: it stats both and asks os.SameFile (modules/setting/path.go),
+  # that is "same device and inode", not "same text". A path reached through
+  # a symlink or a bind mount is therefore not a mismatch to Forgejo and must
+  # not be reported as one here. bash's -ef is that same test.
+  #
+  # Identical text counts as the same directory even when nothing is there to
+  # stat: `settings` is also run on a host where the path does not exist yet,
+  # and two identical strings are not a disagreement worth a warning.
+  [[ $1 == "$2" ]] || [[ -d $1 && -d $2 && $1 -ef $2 ]]
 }
 
 setting_line() {  # $1 = name, $2 = value, $3 = where the value came from
@@ -827,6 +963,10 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
         fi
       fi
     fi
+    # Checked here, inside this branch, because the operator's own
+    # FORGEJO_WORK_PATH was already put through require_abs above and must not
+    # be complained about twice.
+    require_abs_work_path "$FORGEJO_WORK_PATH" "$FORGEJO_WORK_PATH_SRC" "$tolerant"
   fi
   FORGEJO_WORK_PATH=$(trim_slash "$FORGEJO_WORK_PATH")
 
@@ -892,13 +1032,14 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
   # gave. It is read here whatever the work path found above came from,
   # because it decides what Forgejo itself will use either way.
   wp=$(trim_slash "$(ini_get "$FORGEJO_CONFIG" "" WORK_PATH)")
+  require_abs_work_path "$wp" "app.ini WORK_PATH" "$tolerant"
   if [[ $FORGEJO_WORK_PATH_SRC == env ]]; then
     # An operator override is passed to the CLI as --work-path, and app.ini
     # overrules that flag, so an override that disagrees with app.ini cannot
     # take effect: the dump and the doctor run would quietly use the app.ini
     # value instead of the one asked for. Better to stop and say so than to
     # print one path and use another. The same value in both is no conflict.
-    if [[ -n $wp && $wp != "$FORGEJO_WORK_PATH" ]]; then
+    if [[ -n $wp ]] && ! same_dir "$wp" "$FORGEJO_WORK_PATH"; then
       local wp_conflict="FORGEJO_WORK_PATH=$FORGEJO_WORK_PATH but $FORGEJO_CONFIG sets WORK_PATH = $wp. Forgejo follows WORK_PATH in app.ini and ignores --work-path, so this override cannot take effect and the dump and doctor runs would use $wp; either unset FORGEJO_WORK_PATH or change WORK_PATH in app.ini"
       if [[ $tolerant -eq 0 ]]; then
         die "$wp_conflict"
@@ -908,7 +1049,7 @@ resolve_forgejo_settings() {  # --tolerant: never die, --quiet: do not print the
       fi
     fi
   elif [[ -n $wp ]]; then
-    if [[ -n $FORGEJO_WORK_PATH && $wp != "$FORGEJO_WORK_PATH" ]]; then
+    if [[ -n $FORGEJO_WORK_PATH ]] && ! same_dir "$wp" "$FORGEJO_WORK_PATH"; then
       wp_clash="app.ini sets WORK_PATH = $wp but the unit gives $FORGEJO_WORK_PATH (from: $FORGEJO_WORK_PATH_SRC); Forgejo uses the app.ini value and logs an error about the mismatch on every start, so this script uses $wp too. Remove the outdated value from the unit to silence it"
     fi
     FORGEJO_WORK_PATH=$wp
@@ -1017,7 +1158,7 @@ db_is_external() { [[ $FORGEJO_DB_TYPE != sqlite3 ]]; }
 # on a machine with no root and no Forgejo.
 backup_note() {
   if db_is_external; then
-    warn "the database is ${FORGEJO_DB_TYPE:-of unknown type}. The SQL that forgejo dump puts in the zip is not a reliable restore for it (Forgejo's upgrade guide, https://forgejo.org/docs/latest/admin/upgrade/#backup, calls its bugs serious and long standing), so the zip backs up repositories, attachments and the custom directory but not the database. Taking a native dump (pg_dump, mysqldump) is your job; this script does not run one"
+    warn "the database is ${FORGEJO_DB_TYPE:-of unknown type}. The zip that forgejo dump writes does hold an SQL copy of the database, next to the repositories, attachments and the custom directory, but that copy must not be used to restore it (Forgejo's upgrade guide, https://forgejo.org/docs/latest/admin/upgrade/#backup, calls its bugs serious and long standing), so the zip is not a complete backup here. Taking a native dump (pg_dump, mysqldump) is your job; this script does not run one"
   else
     log "the database is SQLite, so the dump zip in $BACKUP_DIR will contain the database file itself and is a complete backup"
   fi

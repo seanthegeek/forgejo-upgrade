@@ -50,13 +50,16 @@ A server upgrade runs these steps in order:
    this account can read the config and write to `BACKUP_DIR`.
 8. Flush Forgejo's queues, then stop the service.
 9. Take a `forgejo dump` backup into `BACKUP_DIR`. For SQLite this zip is a
-   complete backup, database included. For PostgreSQL or MySQL it holds
-   repositories, attachments, and the custom directory only — not the
-   database — so the script warns about this before stopping anything and,
-   on a major upgrade, asks whether a native dump has been taken; running
-   that native dump (`pg_dump`, `mysqldump`) is the operator's own job.
+   complete backup, database included. The zip also contains an SQL copy
+   of the database for PostgreSQL and MySQL, but Forgejo's own upgrade
+   guide says that copy has serious long-standing restore bugs and must
+   not be used to restore either of them. So the script warns about this
+   before stopping anything and, on a major upgrade, asks whether a
+   native dump has been taken; running that native dump (`pg_dump`,
+   `mysqldump`) is the operator's own job.
 10. Copy the old binary to `<name>.prev`, install the new one, keeping its
-    owner, group, and mode.
+    owner, group, mode, ACL, extended attributes such as file
+    capabilities set with `setcap`, and SELinux context.
 11. Start the service and poll `/api/healthz` for up to a minute, until it
     answers HTTP 200.
 12. Run `forgejo doctor check --all`.
@@ -129,17 +132,18 @@ version instead of asking the release API about it.
 | `FORGEJO_BIN` | `ExecStart=` program | `/usr/local/bin/forgejo` |
 | `FORGEJO_USER` | `User=` | `root` for a loaded unit that sets no `User=` (systemd's default); `git` only when the unit is not found |
 | `FORGEJO_CONFIG` | `--config`/`-c` in `ExecStart=` (relative to `WorkingDirectory=`, or `/` if unset) | Forgejo's own default: `<work path>/custom/conf/app.ini`, work path from `--work-path` or `Environment=` (`FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`), else the binary's directory; `custom` is assumed since `FORGEJO_CUSTOM`/`--custom-path` are not read; `/etc/forgejo/app.ini` only if the unit is not found |
-| `FORGEJO_WORK_PATH` | `--work-path`/`-w` in `ExecStart=`, then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=` (the flag wins, as it does for Forgejo), then `WORK_PATH` in `app.ini`, which replaces the unit's value when set; `WorkingDirectory=` is not consulted | unset; Forgejo then uses the directory holding the binary, with a warning |
-| `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); with `http+unix` the URL is `http://unix` and curl dials `FORGEJO_SOCKET` | `http://127.0.0.1:3000` |
+| `FORGEJO_WORK_PATH` | `--work-path`/`-w` in `ExecStart=`, then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR` in `Environment=` (the flag wins, as it does for Forgejo), then `WORK_PATH` in `app.ini`, which replaces the unit's value when set; `WorkingDirectory=` is not consulted; a relative value from any of these sources is refused, because Forgejo itself refuses to start on one (`settings` warns, `forgejo` and `rollback` stop); a unit value and an `app.ini` value naming the same directory through different paths are not a conflict | unset; Forgejo then uses the directory holding the binary, with a warning |
+| `FORGEJO_URL` | `[server]` in `app.ini`: `LOCAL_ROOT_URL` if set, with `%(NAME)s` references expanded as Forgejo does, else `PROTOCOL`/`HTTP_ADDR`/`HTTP_PORT` (`0.0.0.0` becomes `localhost`); with `http+unix` the URL is `http://unix` and curl dials `FORGEJO_SOCKET` | `http://127.0.0.1:3000` |
 | `FORGEJO_SOCKET` | `HTTP_ADDR` in `[server]` when `PROTOCOL` is `http+unix`, whatever `LOCAL_ROOT_URL` says, because that is the socket Forgejo itself dials | unset |
 | `FORGEJO_DB_TYPE` | `DB_TYPE` in `[database]` | unset (unknown) when the config cannot be read |
 | `BACKUP_DIR` | — | `/var/backups/forgejo` |
 | `SKIP_BACKUP` | — | `0` |
 
 `FORGEJO_DB_TYPE` decides what the backup step and the rollback messages
-say: SQLite's database travels inside the `forgejo dump` zip, PostgreSQL's
-and MySQL's do not, and an unreadable config is treated as external out of
-caution.
+say: the `forgejo dump` zip always carries an SQL copy of the database,
+but only for SQLite is that copy a usable restore; for PostgreSQL and
+MySQL, Forgejo's own guide says to restore from a native dump instead.
+An unreadable config is treated as external out of caution.
 
 The unit's `Environment=` entries are passed to every Forgejo CLI call the
 script makes. Those calls run as `FORGEJO_USER` — via `runuser`, falling

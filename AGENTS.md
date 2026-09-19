@@ -193,6 +193,23 @@ re-checking against a current release.
   duplicates are not accumulated, just replaced. `ini_get` matches this:
   it returns the last assignment for a key, and treats an empty last
   value as unset, the same as upstream's `if configWorkPath != ""` check.
+  go-ini also expands `%(NAME)s` references when a value is read
+  (`Key.transformValue`, in `gopkg.in/ini.v1 v1.67.3`, the version Forgejo
+  pins): NAME is looked up in the same section, then, if absent there or
+  if it is the key being read itself, in the keys before the first
+  `[section]`; a name found in neither stops the expansion and leaves the
+  reference in place; the referenced value is itself expanded the same
+  way; up to 99 rounds. Forgejo's config cheat sheet documents
+  `LOCAL_ROOT_URL: %(PROTOCOL)s://%(HTTP_ADDR)s:%(HTTP_PORT)s/` as the
+  default, so an operator who copies that form into `app.ini` is on a
+  documented path. `ini_get` does the same expansion on the value it
+  returns, with two deliberate approximations: an empty lookup counts as
+  "not found" (ini_get already conflates absent and empty), and only
+  names made of letters, digits and underscore are expanded. A cycle
+  (`A = %(B)s`, `B = %(A)s`) terminates in the script: a replacement that
+  still carries a reference is put in place and ends the expansion, and a
+  round counter caps it at 99 either way; go-ini itself would recurse
+  without limit on such a file, so Forgejo would not start on it.
 - **A health check must require exactly HTTP 200.** `curl -f` treats any
   2xx or 3xx response as success, and a reverse proxy in front of Forgejo
   can answer a redirect to a login page — HTTP 302, say — while Forgejo
@@ -217,8 +234,10 @@ re-checking against a current release.
 - **Forgejo and the runner are versioned independently.** Server 16.x pairs
   with runner 13.x. The server release notes state the compatible runner
   range.
-- **The runner's registration survives a binary swap.** It lives in the
-  `.runner` file next to the config. No re-registration after an upgrade.
+- **The runner's registration survives a binary swap.** It lives in the file
+  named by `runner.file` in the runner config, `.runner` by default,
+  resolved relative to the daemon's working directory (`RUNNER_HOME`), not
+  next to the config file itself. No re-registration after an upgrade.
 - **An older Forgejo binary refuses to start on a database a newer release
   migrated.** It hits `log.Fatal` with "Your database ... is for a newer
   Forgejo ... Forgejo will exit to keep your database safe and unchanged"
@@ -246,6 +265,30 @@ re-checking against a current release.
   from `[database]` into `FORGEJO_DB_TYPE`, warns before stopping anything
   when the database is not SQLite, gates the major-upgrade confirmation on
   a native dump having been taken, and words the rollback hints to match.
+- **`cp -p` and `install` drop file capabilities and other extended
+  attributes.** Measured today with GNU coreutils 9.7: `cp -p` copies
+  mode, owner, timestamps and the POSIX ACL but no other extended
+  attribute, so a `security.capability` set with `setcap` (for example
+  `cap_net_bind_service` so Forgejo can bind port 443 as `git`) is lost
+  from the copy; GNU `install` unlinks the destination and writes a new
+  file, so it carries nothing over either. `cp --preserve=all,xattr`
+  keeps every extended attribute and, on a kernel with SELinux, the
+  context; naming `xattr` a second time turns a failed attribute copy
+  from a warning into an error. An explicit `--preserve=context` fails
+  with "cannot preserve security context without an SELinux-enabled
+  kernel" on any other kernel, so it is never used.
+  `cp --attributes-only --preserve=all,xattr --no-preserve=timestamps
+  OLD NEW` copies those attributes onto an existing file without
+  touching its contents or its modification time, and exits 0 when the
+  source has no attributes at all. `install_binary` makes `.prev` with
+  the first form and applies the second to the freshly installed binary,
+  so both the replacement and a later rollback (`mv`, a rename) keep the
+  capability, ACL and context the operator set. There is no `getcap` or
+  `getfattr` on a minimal host and no new dependency is allowed, so
+  `cp`'s exit status is the check; a failed attribute copy is a hard
+  stop by design, since the alternative is a binary that silently lost
+  the capability it needs to bind its port, and `on_exit` prints the
+  `rollback` remedy at that point.
 
 ### Documented install layout
 
@@ -327,6 +370,26 @@ and
   its default depends on `PROTOCOL` — `http://unix/` for `http+unix`.
   Prefer it over reconstructing a URL from `HTTP_ADDR` and `HTTP_PORT` when
   it is set.
+- **Forgejo refuses a relative work path from every source.** Per
+  `modules/setting/path.go`, `InitWorkPathAndCfgProvider`, current
+  `forgejo` branch, a relative `FORGEJO_WORK_DIR` or `GITEA_WORK_DIR` in
+  the environment hits
+  `log.Fatal("FORGEJO_WORK_DIR (work path) must be absolute path")`, a
+  relative `--work-path` hits
+  `log.Fatal("--work-path must be absolute path")`, and a relative
+  `WORK_PATH` in `app.ini` hits
+  `log.Fatal("WORK_PATH in %q must be absolute path")`. None of them is
+  ever resolved against the unit's `WorkingDirectory=`, unlike `--config`.
+  So the script does not resolve one either: `require_abs_work_path`
+  refuses a relative value from any of these sources with the matching
+  Forgejo message (a warning in `settings`, a hard stop before anything
+  is stopped in `forgejo` and `rollback`). Also: Forgejo's own check for
+  a mismatch between the unit's work path and `WORK_PATH` in `app.ini` is
+  `os.Stat` on both and `!os.SameFile`, i.e. the same directory by device
+  and inode, after `filepath.Clean` on the `app.ini` value; the script's
+  `same_dir` uses bash's `-ef` for the same rule, so a symlink to the
+  same directory is not a conflict, and equal strings never are, even
+  for a directory that does not exist on this host.
 - **The runner's registration file is named by `runner.file` in its own
   config**, resolved relative to the daemon's working directory, not to the
   config file's own directory.
@@ -420,6 +483,13 @@ There is no Forgejo install on the development machine, so testing is split.
   return the last value; a third assignment left empty must return
   nothing, the same as unset; and a key that exists only in another
   section must not be returned for the section being queried.
+- **`ini_get` interpolation, tested against a temp ini file.**
+  `LOCAL_ROOT_URL = %(PROTOCOL)s://%(HTTP_ADDR)s:%(HTTP_PORT)s/` with
+  those three keys set must give the assembled URL; a missing name stays
+  literal; a name only in the keys before the first section resolves
+  from there; a self-reference in `[server]` falls to that default
+  section; nested references resolve; a cycle terminates; values without
+  `%(` and with a lone `%` are unchanged.
 - **Version parsers, tested against real output.** Download the binary and
   feed its `--version` output to `installed_forgejo` / `installed_runner`, or
   stub the binary with a one-line script that echoes the real string.
@@ -466,7 +536,23 @@ There is no Forgejo install on the development machine, so testing is split.
   and nothing else, and `check` must print "not installed" and "-" for
   both components and exit 0 even when `curl` fails, since an absent
   component is never asked about. Every existing stub unit's output must
-  stay byte-identical to what it printed before this change.
+  stay byte-identical to what it printed before this change. Add stub
+  units with a relative `--work-path` and with a relative
+  `FORGEJO_WORK_DIR` in `Environment=`, and a stub `app.ini` with a
+  relative `WORK_PATH`, and confirm `settings` warns with Forgejo's own
+  "must be absolute path" wording while `forgejo` and `rollback forgejo`
+  die on it; an app.ini whose `LOCAL_ROOT_URL` uses `%(...)s` references
+  must show the expanded URL in `settings`; `same_dir` on a directory
+  and a symlink to it must agree.
+- **`install_binary`, exercised from the sourced definitions under
+  `tmp/`, without root.** Set a `user.*` extended attribute and an ACL
+  on a fake old binary with a 2020 modification time, install a fake new
+  file over it, and confirm the new file has the new contents, the old
+  mode, the attribute and the ACL, and a current modification time, and
+  that `.prev` has the old contents with the same attribute and ACL.
+  `install -o`/`-g` with your own ids needs no root. This is the one
+  part of the install sequence that can run here; the stop, backup,
+  start and health check still cannot.
 - **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
   on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
   fails; swap in one that prints `200` and confirm it passes. This needs
