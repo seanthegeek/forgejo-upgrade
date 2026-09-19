@@ -150,7 +150,7 @@ on_exit() {
          # run; when it found nothing, restore_hint uses the cautious
          # wording, which covers an unknown database as well as an external
          # one.
-         warn "if the journal says the database is for a newer Forgejo, the data has to go back before that start (see https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore): $(restore_hint)" ;;
+         warn "if the journal says the database is for a newer Forgejo, the data has to go back before that start (see https://forgejo.org/docs/latest/admin/upgrade/#backup): $(restore_hint)" ;;
       *) warn "the binary was not changed. Start the service again with: systemctl start $STOPPED_SVC" ;;
     esac
   fi
@@ -1428,6 +1428,13 @@ upgrade_forgejo() {
   if [[ ${cur%%.*} != "${want%%.*}" ]]; then
     warn "major version change ${cur%%.*} -> ${want%%.*}: read the release notes first:"
     warn "  $FORGEJO_REPO/src/branch/forgejo/release-notes-published/$want.md"
+    # The breaking changes for a major version are written up in the notes for
+    # the first release of that line, which is a different file unless that
+    # first release is the very version being installed.
+    if [[ $want != "${want%%.*}.0.0" ]]; then
+      warn "  the breaking changes for ${want%%.*} are listed in the notes for the first release of that line: $FORGEJO_REPO/src/branch/forgejo/release-notes-published/${want%%.*}.0.0.md"
+    fi
+    warn "  upgrade paths known to cause trouble are listed at https://forgejo.org/docs/latest/admin/upgrade/#when-upgrading-from--known-problematic-versions-or-upgrade-paths"
     local prompt="Continue? [y/N] "
     if db_is_external; then
       # Going back from a major upgrade means putting the database back as
@@ -1466,7 +1473,7 @@ upgrade_forgejo() {
     # The service is up, so a failure here is a real problem with the queues
     # rather than a stopped service; it is still not worth aborting an upgrade.
     as_forgejo manager flush-queues --timeout 2m \
-      || warn "flush-queues failed, continuing"
+      || warn "flush-queues failed, continuing. Forgejo's upgrade guide says queued data is not guaranteed to be readable by the next version and to rerun the flush with a longer --timeout (https://forgejo.org/docs/latest/admin/upgrade/#preparing-the-forgejo-upgrade); press Ctrl-C now to do that first"
   else
     warn "$FORGEJO_SERVICE is not running, so there are no queues to flush and no way to health check it before the upgrade"
   fi
@@ -1568,10 +1575,14 @@ upgrade_runner() {
   [[ $got == "$want" ]] \
     || die "downloaded binary reports version '${got:-none}', expected $want. Its --version output was: '${out%%$'\n'*}'"
 
-  # SIGTERM lets the runner finish in-flight jobs. The stock unit sets
-  # TimeoutStopSec=infinity, so the wait is unbounded unless a drop-in sets a finite value.
-  log "Stopping $RUNNER_SERVICE (waits for running jobs)"
-  # Set before the stop, not after: the wait for jobs is unbounded, and a
+  # SIGTERM does not stop the runner at once. It waits for the jobs already
+  # running, for as long as its own runner.shutdown_timeout allows - 3h in the
+  # config that "forgejo-runner generate-config" writes, while unset or zero
+  # cancels them straight away - and then cancels whatever is still going.
+  # TimeoutStopSec=infinity in the stock unit only means systemd never kills
+  # it first, so this stop can take hours unless a drop-in sets a finite value.
+  log "Stopping $RUNNER_SERVICE (waits for running jobs, up to the runner's shutdown_timeout)"
+  # Set before the stop, not after: the wait for jobs can be hours, and a
   # Ctrl-C during it still leaves the runner stopping. From here until the
   # runner is active again, any exit is reported by on_exit.
   STOPPED_SVC="$RUNNER_SERVICE"
@@ -1669,7 +1680,7 @@ rollback() {
   if [[ $nostart -eq 1 ]]; then
     log "The previous binary is back in place at $bin, but $svc was left stopped on purpose: $reason"
     if [[ $kind == forgejo ]]; then
-      log "Next, before it is started again (see https://forgejo.org/docs/latest/admin/upgrade/#backup-and-restore): $(restore_hint)"
+      log "Next, before it is started again (see https://forgejo.org/docs/latest/admin/upgrade/#backup): $(restore_hint)"
       log "Then: systemctl start $svc"
     else
       log "Next: start it with: systemctl start $svc"

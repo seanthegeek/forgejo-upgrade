@@ -56,10 +56,14 @@ that every collaborator picks them up the same way.
   `RELEASE_KEY`. A failed verification stops the upgrade and says why.
 - **The pinned fingerprint is the trust root. Changing it is a security
   decision, not a fix.** If a signature check starts failing, first check
-  whether the release moved to a new subkey of the same primary key, which
-  the current check already tolerates. Only change `RELEASE_KEY` after
-  confirming the new fingerprint on <https://forgejo.org/download/> and name
-  that source in the commit message. When a signature fails because the
+  whether the release moved to a new subkey of the same primary key, per
+  [GnuPG's DETAILS](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L537)
+  (`VALIDSIG` lists the subkey fingerprint then the primary), which the
+  current check already tolerates. Only change `RELEASE_KEY` after
+  confirming the new fingerprint on the
+  [download page](https://forgejo.org/download/#installation-from-binary)
+  and name that source in the commit message. When a signature fails
+  because the
   signing subkey is not yet in the local keyring, the script refreshes
   exactly `RELEASE_KEY` from `KEYSERVER` and retries the check once — that
   is the only automatic key action it takes, it never imports anything
@@ -95,11 +99,17 @@ that every collaborator picks them up the same way.
     exit status ("is the key present") is used.
   - `gpg_valid_sig`: `gpg --verify ... 2>/dev/null || true` — the exit
     status is ignored on purpose, because gpg exits non-zero on
-    `NO_PUBKEY`; the status-fd lines are what is judged instead
-    (`VALIDSIG` for the pinned key, and none of `EXPSIG`, `EXPKEYSIG`, or
-    `REVKEYSIG` present — gpg emits one of those three alongside
-    `VALIDSIG` for a signature that is valid but expired, or made by an
-    expired or revoked key). `gpg_verdict` reads the same status lines to
+    [`NO_PUBKEY`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L829);
+    the status-fd lines are what is judged instead
+    ([`VALIDSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L537)
+    for the pinned key, and none of
+    [`EXPSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L485),
+    [`EXPKEYSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L492),
+    or
+    [`REVKEYSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L499)
+    present — gpg emits one of those three alongside `VALIDSIG` for a
+    signature that is valid but expired, or made by an expired or revoked
+    key). `gpg_verdict` reads the same status lines to
     classify a failure — missing key, bad signature, expired, revoked, a
     different key, or unverifiable — for the message `fetch_and_verify`
     prints. The human-readable stderr stays suppressed.
@@ -155,19 +165,45 @@ that every collaborator picks them up the same way.
   Both happen.
 - **Research order: the live release artifact, then Forgejo's own docs, then
   Forgejo issues.** Third-party security write-ups and AI explainers are
-  pointers, not evidence. One write-up claimed the 16.0.4 template
-  repository bug needed no account. Forgejo's release notes say it needs a
-  malicious template repository, which needs an account. The docs showed a
-  capitalized version string the binary does not print. Check the artifact.
+  pointers, not evidence. One write-up claimed the
+  [16.0.4 template repository bug](https://www.cve.org/CVERecord?id=CVE-2026-89094)
+  needed no account.
+  [Forgejo's release notes](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/release-notes-published/16.0.4.md)
+  say it needs a malicious template repository, which needs an account.
+  Write-ups showed a capitalized `Forgejo version` string the binary does
+  not print; the current docs page on
+  [obtaining the version](https://forgejo.org/docs/latest/user/api/versions/#obtaining-the-forgejo-version)
+  does not show the string at all. Check the artifact. A CVE id or a CVSS
+  score is checked at
+  [MITRE](https://cveawg.mitre.org/api/cve/CVE-2026-89094) or
+  [NVD](https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=Forgejo),
+  never in Forgejo's own release notes or security-announcements issues,
+  which carry neither. NVD answers a bare `curl` with an empty body; pass a
+  `User-Agent`. The README's "CVSS 9.9" for the 16.0.4 template repository
+  fix was wrongly called unsupported after reading only Forgejo's notes.
+- **A number in the docs is a claim like any other.** A count, a score, a
+  timeout, a version: each is checked against its artifact the same way a
+  version string is, before it is written and again when it is cited.
+  Today's finds: "two of the fixes in 16.0.4" was one; "waits for in-flight
+  jobs" was "waits up to `runner.shutdown_timeout`".
 - **Read official documentation in full before changing behavior that
-  depends on it.** The upgrade guide, the binary installation guide, and the
-  runner installation guide are short. Read the page, not the heading.
+  depends on it.** The
+  [upgrade guide](https://forgejo.org/docs/latest/admin/upgrade/), the
+  [binary installation guide](https://forgejo.org/docs/latest/admin/installation/binary/),
+  and the
+  [runner installation guide](https://forgejo.org/docs/latest/admin/actions/installation/binary/)
+  are short. Read the page, not the heading. A `grep` over a downloaded
+  page is a heading skim, not a reading: grepping the runner installation
+  guide for `.runner` missed its statement that the runner has no default
+  configuration file location and its instruction to start the daemon from
+  the home directory, both of which the script depends on.
 - **No new dependencies.** The script needs `bash`, `curl`, `gpg`, `runuser`
   (util-linux) or `sudo`, `sed`, `grep`, GNU coreutils (`install`,
   `sha256sum`, `mktemp`, `cp`, `date`, `stat`), and systemd
   (`systemctl`, `journalctl`). Do not add `jq`, Python, or anything else an
-  operator would have to install on a server first. The `tag_name` parser
-  uses `sed` for exactly this reason.
+  operator would have to install on a server first. The
+  [`tag_name`](https://code.forgejo.org/api/swagger#/repository/repoGetLatestRelease)
+  parser uses `sed` for exactly this reason.
 
 ## Facts about Forgejo release artifacts
 
@@ -175,31 +211,52 @@ Each of these was learned by running the script against a real release and
 having it fail. Do not change the code that depends on them without
 re-checking against a current release.
 
+Source links below are pinned to a commit or tag, not a moving branch:
+[forgejo commit `a0ad12ba49c03d56347b95f1b40af0a304746e00`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/),
+[runner commit `d86d3195ac851bcfed165e692c76e5c44d47b4a9`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/),
+[go-ini tag `v1.67.3`](https://github.com/go-ini/ini/blob/v1.67.3/), and
+[gnupg commit `eb9d633dd4f75713169446988400882965170caa`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS).
+Every `#Lnn` line link below points at one of these four pins.
+
 - **Releases are signed by a rotating subkey, not the primary key.** gpg's
-  `VALIDSIG` status line lists the signing subkey fingerprint first and the
+  [`VALIDSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L537)
+  status line lists the signing subkey fingerprint first and the
   primary key fingerprint last. The check matches the primary fingerprint at
   the end of the line, so subkey rotation does not break it. Matching the
   primary fingerprint right after `VALIDSIG` fails on every release.
   `VALIDSIG` by itself only means the signature is cryptographically
-  valid: gpg prints it together with `EXPSIG`, `EXPKEYSIG`, or `REVKEYSIG`
+  valid: gpg prints it together with
+  [`EXPSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L485),
+  [`EXPKEYSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L492),
+  or
+  [`REVKEYSIG`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L499)
   for a signature that is valid but expired, or made by an expired or
-  revoked key, so the check also rejects those three records. `KEYEXPIRED`
+  revoked key, so the check also rejects those three records.
+  [`KEYEXPIRED`](https://github.com/gpg/gnupg/blob/eb9d633dd4f75713169446988400882965170caa/doc/DETAILS#L815)
   lines are different — every current release's status carries them for
   older, unrelated subkeys — and must not be treated as a failure.
 - **A duplicated key in `app.ini` uses the last assignment, not the
-  first.** go-ini's `Section.NewKey` overwrites the value on a repeated
-  key, and Forgejo's `configProviderLoadOptions()`
+  first.** go-ini's
+  [`Section.NewKey`](https://github.com/go-ini/ini/blob/v1.67.3/section.go#L66-L84)
+  overwrites the value on a repeated key, and Forgejo's
+  [`configProviderLoadOptions()`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/config_provider.go#L189-L194)
   (`modules/setting/config_provider.go`) never sets `AllowShadows`, so
   duplicates are not accumulated, just replaced. `ini_get` matches this:
   it returns the last assignment for a key, and treats an empty last
-  value as unset, the same as upstream's `if configWorkPath != ""` check.
-  go-ini also expands `%(NAME)s` references when a value is read
-  (`Key.transformValue`, in `gopkg.in/ini.v1 v1.67.3`, the version Forgejo
-  pins): NAME is looked up in the same section, then, if absent there or
-  if it is the key being read itself, in the keys before the first
+  value as unset, the same as upstream's
+  [`if configWorkPath != ""`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L190)
+  check. go-ini also expands `%(NAME)s` references when a value is read
+  ([`Key.transformValue`](https://github.com/go-ini/ini/blob/v1.67.3/key.go#L142-L176),
+  in
+  [`gopkg.in/ini.v1 v1.67.3`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/go.mod#L112),
+  the version Forgejo pins): NAME is looked up in the same section, then,
+  if absent there or if it is the key being read itself, in the keys
+  before the first
   `[section]`; a name found in neither stops the expansion and leaves the
   reference in place; the referenced value is itself expanded the same
-  way; up to 99 rounds. Forgejo's config cheat sheet documents
+  way; up to 99 rounds.
+  [Forgejo's config cheat sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#server-server)
+  documents
   `LOCAL_ROOT_URL: %(PROTOCOL)s://%(HTTP_ADDR)s:%(HTTP_PORT)s/` as the
   default, so an operator who copies that form into `app.ini` is on a
   documented path. `ini_get` does the same expansion on the value it
@@ -210,75 +267,102 @@ re-checking against a current release.
   still carries a reference is put in place and ends the expansion, and a
   round counter caps it at 99 either way; go-ini itself would recurse
   without limit on such a file, so Forgejo would not start on it.
-- **A health check must require exactly HTTP 200.** `curl -f` treats any
-  2xx or 3xx response as success, and a reverse proxy in front of Forgejo
-  can answer a redirect to a login page — HTTP 302, say — while Forgejo
-  itself is down. `healthz` reads only the status code and accepts `200`
-  alone.
+- **A health check must require exactly HTTP 200.**
+  [curl's `-f`](https://curl.se/docs/manpage.html) treats any 2xx or 3xx
+  response as success, and a reverse proxy in front of Forgejo can answer
+  a redirect to a login page — HTTP 302, say — while Forgejo itself is
+  down.
+  [`healthz`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/routers/web/healthcheck/check.go#L67)
+  reads only the status code and accepts `200` alone.
 - **The primary key fingerprint is
-  `EB114F5E6C0DC2BCDD183550A4B61A2DC5923710`** per
-  <https://forgejo.org/download/>. The same key signs the runner.
+  `EB114F5E6C0DC2BCDD183550A4B61A2DC5923710`** per the
+  [download page](https://forgejo.org/download/#installation-from-binary).
+  The same key signs the runner, per the
+  [runner guide](https://forgejo.org/docs/latest/admin/actions/installation/binary/#downloading-and-installing-the-binary),
+  which shows the same fingerprint.
 - **The server binary prints a lowercase `forgejo version 16.0.5+gitea-...`**
-  even though the docs show it capitalized (re-confirmed against the 16.0.5
-  binary today). The version parsers accept either case.
-- **The runner prints `forgejo-runner version v13.1.0`** with a `v` prefix.
+  even though write-ups show it capitalized (the docs page on
+  [obtaining the version](https://forgejo.org/docs/latest/user/api/versions/#obtaining-the-forgejo-version)
+  does not; re-confirmed against the 16.0.5 binary today). The version
+  parsers accept either case.
+- **The runner prints `forgejo-runner version v13.1.0`** with a `v`
+  prefix, per the
+  [runner guide](https://forgejo.org/docs/latest/admin/actions/installation/binary/#downloading-and-installing-the-binary),
+  which shows `forgejo-runner version v13.0.0`.
 - **Asset names** are `forgejo-<ver>-linux-<arch>` and
   `forgejo-runner-<ver>-linux-<arch>` under
-  `https://code.forgejo.org/forgejo/<repo>/releases/download/v<ver>/`, each
-  with `.asc` and `.sha256` siblings. The `.sha256` file is standard
+  `https://code.forgejo.org/forgejo/<repo>/releases/download/v<ver>/`,
+  seen at the
+  [runner releases page](https://code.forgejo.org/forgejo/runner/releases),
+  each with `.asc` and `.sha256` siblings. The `.sha256` file is standard
   `sha256sum` format naming the asset, so `sha256sum -c` must run in the
   directory holding the asset.
-- **The release API's `latest` is across all lines.** On an LTS line it
-  returns the newer stable line's version. That is why the script confirms
-  before a major version change.
-- **Forgejo and the runner are versioned independently.** Server 16.x pairs
-  with runner 13.x. The server release notes state the compatible runner
-  range.
+- **The
+  [release API's `latest`](https://code.forgejo.org/api/swagger#/repository/repoGetLatestRelease)
+  is across all lines.** On an LTS line it returns the newer stable
+  line's version, per the
+  [upgrade guide's release life cycle](https://forgejo.org/docs/latest/admin/upgrade/#release-life-cycle).
+  That is why the script confirms before a major version change.
+- **Forgejo and the runner are versioned independently.**
+  [Server 16.x](https://forgejo.org/releases/16.x/) pairs with runner
+  13.x. The server release notes state the compatible runner range.
 - **The runner's registration survives a binary swap.** It lives in the file
-  named by `runner.file` in the runner config, `.runner` by default,
-  resolved relative to the daemon's working directory (`RUNNER_HOME`), not
-  next to the config file itself. No re-registration after an upgrade.
+  named by
+  [`runner.file`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/internal/pkg/config/config.example.yaml#L23)
+  in the runner config, `.runner` by default, resolved relative to the
+  daemon's
+  [working directory](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service#L12)
+  (`RUNNER_HOME`), not next to the config file itself. No
+  re-registration after an upgrade, per the
+  [runner guide's starting section](https://forgejo.org/docs/latest/admin/actions/installation/binary/#starting-the-runner).
 - **An older Forgejo binary refuses to start on a database a newer release
   migrated.** It hits `log.Fatal` with "Your database ... is for a newer
   Forgejo ... Forgejo will exit to keep your database safe and unchanged"
-  (`models/gitea_migrations/migrations.go`,
-  `models/forgejo_migrations/migrate.go`). This cannot corrupt data, but it
-  does leave the service down, which is why `rollback` across a major
-  version does not auto-start — it stops, restores `.prev`, and waits for
-  the operator to restore the pre-upgrade dump first.
+  ([`models/gitea_migrations/migrations.go`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/models/gitea_migrations/migrations.go#L489-L496),
+  [`models/forgejo_migrations/migrate.go`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/models/forgejo_migrations/migrate.go#L196)).
+  This cannot corrupt data, but it does leave the service down, which is
+  why `rollback` across a major version does not auto-start — it stops,
+  restores `.prev`, and waits for the operator to restore the pre-upgrade
+  dump first, per the
+  [upgrade guide's note on this exact fatal](https://forgejo.org/docs/latest/admin/upgrade/#unexpected-database-version).
 - **`forgejo dump`'s zip is not a safe database restore for PostgreSQL or
-  MySQL.** Forgejo's upgrade guide, "Backup" section
-  (<https://forgejo.org/docs/latest/admin/upgrade/>), says the zip
+  MySQL.**
+  [Forgejo's upgrade guide, "Backup" section](https://forgejo.org/docs/latest/admin/upgrade/#backup),
+  says the zip
   "contains a copy of the database [but] has serious long standing open
   bugs that may introduce problems when re-injecting the SQL dump in a new
   database," and says to use `pg_dump`/`mysqldump` instead. For SQLite the
   guide says the opposite: "there is no need to dump SQLite because the
-  database itself is included in the zip file already." `cmd/dump.go` has
-  no flag to skip the database portion — `--skip-repository`,
+  database itself is included in the zip file already."
+  [`cmd/dump.go`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/dump.go#L199-L229)
+  has no flag to skip the database portion — `--skip-repository`,
   `--skip-log`, `--skip-custom-dir`, `--skip-lfs-data`,
   `--skip-attachment-data`, `--skip-package-data`, `--skip-index`, and
   `--skip-repo-archives` exist, a database skip does not — so the zip
-  always carries the SQL regardless of `DB_TYPE`. The script does not
-  automate a native dump: doing so would add a new dependency, need
-  database credentials, and possibly reach a remote database host, all
-  inside the window the service is stopped. Instead it reads `DB_TYPE`
-  from `[database]` into `FORGEJO_DB_TYPE`, warns before stopping anything
-  when the database is not SQLite, gates the major-upgrade confirmation on
-  a native dump having been taken, and words the rollback hints to match.
+  always carries the SQL regardless of
+  [`DB_TYPE`](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#database-database).
+  The script does not automate a native dump: doing so would add a new
+  dependency, need database credentials, and possibly reach a remote
+  database host, all inside the window the service is stopped. Instead it
+  reads `DB_TYPE` from `[database]` into `FORGEJO_DB_TYPE`, warns before
+  stopping anything when the database is not SQLite, gates the
+  major-upgrade confirmation on a native dump having been taken, and
+  words the rollback hints to match.
 - **`cp -p` and `install` drop file capabilities and other extended
   attributes.** Measured today with GNU coreutils 9.7: `cp -p` copies
   mode, owner, timestamps and the POSIX ACL but no other extended
   attribute, so a `security.capability` set with `setcap` (for example
   `cap_net_bind_service` so Forgejo can bind port 443 as `git`) is lost
   from the copy; GNU `install` unlinks the destination and writes a new
-  file, so it carries nothing over either. `cp --preserve=all,xattr`
+  file, so it carries nothing over either.
+  [`cp --preserve=all,xattr`](https://www.gnu.org/software/coreutils/manual/html_node/cp-invocation.html#index-_002d_002dpreserve)
   keeps every extended attribute and, on a kernel with SELinux, the
   context; naming `xattr` a second time turns a failed attribute copy
   from a warning into an error. An explicit `--preserve=context` fails
   with "cannot preserve security context without an SELinux-enabled
   kernel" on any other kernel, so it is never used.
-  `cp --attributes-only --preserve=all,xattr --no-preserve=timestamps
-  OLD NEW` copies those attributes onto an existing file without
+  [`cp --attributes-only --preserve=all,xattr --no-preserve=timestamps OLD NEW`](https://www.gnu.org/software/coreutils/manual/html_node/cp-invocation.html#index-_002d_002dattributes_002donly)
+  copies those attributes onto an existing file without
   touching its contents or its modification time, and exits 0 when the
   source has no attributes at all. `install_binary` makes `.prev` with
   the first form and applies the second to the freshly installed binary,
@@ -298,26 +382,39 @@ stock unit files:
 and
 <https://code.forgejo.org/forgejo/runner/raw/branch/main/contrib/forgejo-runner.service>.
 
-- **Server unit:** `User=git`, binary at `/usr/local/bin/forgejo`, config at
-  `/etc/forgejo/app.ini`, `WorkingDirectory=/var/lib/forgejo`. A unit that
-  sets no `User=` at all runs as root (systemd's own default for a system
-  service), so the script resolves `FORGEJO_USER` to `root` for a loaded
-  unit that omits it, and falls back to `git` only when the unit is not
+- **Server unit:**
+  [`User=git`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/contrib/systemd/forgejo.service#L56),
+  binary at `/usr/local/bin/forgejo`, config at `/etc/forgejo/app.ini`,
+  [`WorkingDirectory=/var/lib/forgejo`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/contrib/systemd/forgejo.service#L58).
+  A unit that sets no `User=` at all runs as root
+  ([systemd's own default for a system service](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#User=)),
+  so the script resolves `FORGEJO_USER` to `root` for a loaded unit that
+  omits it, and falls back to `git` only when the unit is not found at
+  all.
+- **Runner unit:**
+  [`User=runner`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service#L11),
+  [`WorkingDirectory=/home/runner`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service#L12),
+  [`ExecStart=... daemon -c /home/runner/runner-config.yml`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service#L7),
+  so the `.runner` registration file lives in `/home/runner`.
+  [`TimeoutStopSec=infinity`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/contrib/forgejo-runner.service#L15)
+  — systemd never gives up waiting on `systemctl stop`; the runner
+  itself waits
+  [`runner.shutdown_timeout`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/internal/pkg/config/config.example.yaml#L38-L42)
+  (3h in the generated config, zero or unset cancels at once) and then
+  [cancels running jobs](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/internal/app/cmd/daemon.go#L93-L100).
+  A unit that sets no `WorkingDirectory=` at all runs in `/`
+  ([systemd's own default for a system service](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#WorkingDirectory=)),
+  so the script resolves `RUNNER_HOME` to `/` for a loaded unit that
+  omits it, and falls back to `/home/runner` only when the unit is not
   found at all.
-- **Runner unit:** `User=runner`, `WorkingDirectory=/home/runner`,
-  `ExecStart=... daemon -c /home/runner/runner-config.yml`, so the `.runner`
-  registration file lives in `/home/runner`. `TimeoutStopSec=infinity` — the
-  stock unit never gives up waiting for in-flight jobs on `systemctl stop`.
-  A unit that sets no `WorkingDirectory=` at all runs in `/` (systemd's own
-  default for a system service), so the script resolves `RUNNER_HOME` to
-  `/` for a loaded unit that omits it, and falls back to `/home/runner`
-  only when the unit is not found at all.
-- **`systemctl show UNIT -p PROP --value` has two shapes worth knowing.**
+- **[`systemctl show UNIT -p PROP --value`](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#show%20PATTERN%E2%80%A6%7CJOB%E2%80%A6)
+  has two shapes worth knowing.**
   `ExecStart` comes back as one record,
   `{ path=/usr/local/bin/forgejo ; argv[]=/usr/local/bin/forgejo web -c /x ;
   ignore_errors=no ; ... }`, so the program and its arguments have to be
   pulled back out of that record rather than read as separate fields.
-  `Environment` comes back as one space-separated `KEY=VALUE ...` line.
+  [`Environment`](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Environment=)
+  comes back as one space-separated `KEY=VALUE ...` line.
 - **The `argv[]` in that record is not quoted, so it is lossy.** Checked
   on systemd 259: `--setenv` and a spaced argument produce
   `argv[]=/bin/echo -c /path with spaces/app.ini plain`, with nothing to
@@ -332,16 +429,23 @@ and
 - **`LOCAL_ROOT_URL` does not change which socket Forgejo dials.** With
   `PROTOCOL = http+unix`, Forgejo's own internal client connects to the
   socket in `HTTP_ADDR` no matter what `LOCAL_ROOT_URL` says
-  (`modules/private/internal.go`). The script therefore resolves the
-  socket before, and independently of, the URL.
-- **`systemctl show` exits `0` even for a unit that does not exist.** The
-  only signal that the unit is real is `LoadState=loaded`; a unit systemd
-  has never heard of reports `LoadState=not-found` with the same zero exit
-  status, so the exit status cannot be what the script checks.
-- **Forgejo's CLI global flags — `--config`, `--work-path`,
-  `--custom-path` — go before the subcommand, not after**
-  (`forgejo --config X dump`, not `forgejo dump --config X`), and with none
-  of them given the default work path is the directory holding the binary.
+  ([`modules/private/internal.go`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/private/internal.go#L56)).
+  The script therefore resolves the socket before, and independently of,
+  the URL.
+- **[`systemctl show`](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#show%20PATTERN%E2%80%A6%7CJOB%E2%80%A6)
+  exits `0` even for a unit that does not exist.** The only signal that
+  the unit is real is `LoadState=loaded`; a unit systemd has never heard
+  of reports `LoadState=not-found` with the same zero exit status, so the
+  exit status cannot be what the script checks.
+- **[Forgejo's CLI global flags](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/main.go#L62-L73)
+  — `--config`, `--work-path`, `--custom-path` — go before the
+  subcommand, not after**
+  (`forgejo --config X dump`, not `forgejo dump --config X`; see also
+  the
+  [command-line reference](https://forgejo.org/docs/latest/admin/command-line/#forgejo---help)),
+  and with none of them given the default work path is the directory
+  holding the binary, per the
+  [binary installation guide's general hints](https://forgejo.org/docs/latest/admin/installation/binary/#general-hints-for-using-forgejo).
   A CLI call the script makes on the operator's behalf has to pass
   `--work-path` explicitly or inherit `FORGEJO_WORK_DIR` from the unit's
   `Environment=`, or it looks for data next to the binary instead of where
@@ -349,61 +453,86 @@ and
 - **A relative `--config` resolves against the daemon's current
   directory, not against the work path.** Per `modules/setting/path.go`'s
   `InitWorkPathAndCfgProvider`, a relative path is passed through
-  `filepath.Abs`, which resolves it there: the unit's `WorkingDirectory=`,
+  [`filepath.Abs`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L170),
+  which resolves it there: the unit's `WorkingDirectory=`,
   or `/` when that is unset. With no `--config` at all, the file is
   `<work path>/custom/conf/app.ini`, where the work path is `--work-path`,
   then `FORGEJO_WORK_DIR`/`GITEA_WORK_DIR`, else the directory holding the
-  binary — `readFromEnv()` runs first, `readFromArgs()` runs after, and
-  the flag's own `Set` call overwrites the environment value it finds
+  binary —
+  [`readFromEnv()` runs first, `readFromArgs()` runs after](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L177-L178),
+  and the flag's own `Set` call overwrites the environment value it finds
   already there, so the flag wins; `WorkingDirectory=` is never a
-  work-path source. `WORK_PATH` in `app.ini` is read only after the
-  config file is located, so it cannot move the config — but once
+  work-path source.
+  [`WORK_PATH` in `app.ini` is read only after the config file is located](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L189),
+  so it cannot move the config — but once
   `app.ini` is read, `WORK_PATH` there replaces the work path taken from
   `Environment=` or `--work-path` for everything else. This also means an
   operator-supplied `--work-path` can never override a `WORK_PATH` already
   set in `app.ini`, which is why the script refuses a `FORGEJO_WORK_PATH`
   that conflicts with `app.ini` rather than pretend the override took
-  effect. `cmd/web.go` only `log.Error`s about the mismatch and keeps
-  running, so the script follows `app.ini` too. Checked against the
+  effect.
+  [`cmd/web.go` only `log.Error`s about the mismatch and keeps running](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/cmd/web.go#L171),
+  so the script follows `app.ini` too. Checked against the
   current `forgejo` branch source.
 - **`LOCAL_ROOT_URL` is what Forgejo itself uses for local requests**, and
-  its default depends on `PROTOCOL` — `http://unix/` for `http+unix`.
-  Prefer it over reconstructing a URL from `HTTP_ADDR` and `HTTP_PORT` when
-  it is set.
+  its
+  [default depends on `PROTOCOL`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/server.go#L288-L304)
+  (see also the
+  [cheat sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/#server-server))
+  — `http://unix/` for `http+unix`. Prefer it over reconstructing a URL
+  from `HTTP_ADDR` and `HTTP_PORT` when it is set.
 - **Forgejo refuses a relative work path from every source.** Per
   `modules/setting/path.go`, `InitWorkPathAndCfgProvider`, current
-  `forgejo` branch, a relative `FORGEJO_WORK_DIR` or `GITEA_WORK_DIR` in
-  the environment hits
+  `forgejo` branch, a relative
+  [`FORGEJO_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L124)
+  or
+  [`GITEA_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L132)
+  in the environment hits
   `log.Fatal("FORGEJO_WORK_DIR (work path) must be absolute path")`, a
   relative `--work-path` hits
-  `log.Fatal("--work-path must be absolute path")`, and a relative
-  `WORK_PATH` in `app.ini` hits
-  `log.Fatal("WORK_PATH in %q must be absolute path")`. None of them is
-  ever resolved against the unit's `WorkingDirectory=`, unlike `--config`.
-  So the script does not resolve one either: `require_abs_work_path`
-  refuses a relative value from any of these sources with the matching
-  Forgejo message (a warning in `settings`, a hard stop before anything
-  is stopped in `forgejo` and `rollback`). Also: Forgejo's own check for
-  a mismatch between the unit's work path and `WORK_PATH` in `app.ini` is
-  `os.Stat` on both and `!os.SameFile`, i.e. the same directory by device
-  and inode, after `filepath.Clean` on the `app.ini` value; the script's
-  `same_dir` uses bash's `-ef` for the same rule, so a symlink to the
-  same directory is not a conflict, and equal strings never are, even
-  for a directory that does not exist on this host.
-- **The runner's registration file is named by `runner.file` in its own
-  config**, resolved relative to the daemon's working directory, not to the
-  config file's own directory.
+  [`log.Fatal("--work-path must be absolute path")`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L157),
+  and a relative `WORK_PATH` in `app.ini` hits
+  [`log.Fatal("WORK_PATH in %q must be absolute path")`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L192).
+  None of them is ever resolved against the unit's `WorkingDirectory=`,
+  unlike `--config`. So the script does not resolve one either:
+  `require_abs_work_path` refuses a relative value from any of these
+  sources with the matching Forgejo message (a warning in `settings`, a
+  hard stop before anything is stopped in `forgejo` and `rollback`).
+  Also: Forgejo's own check for a mismatch between the unit's work path
+  and `WORK_PATH` in `app.ini` is
+  [`os.Stat` on both and `!os.SameFile`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L195-L199),
+  i.e. the same directory by device and inode, after `filepath.Clean` on
+  the `app.ini` value; the script's `same_dir` uses bash's `-ef` for the
+  same rule, so a symlink to the same directory is not a conflict, and
+  equal strings never are, even for a directory that does not exist on
+  this host.
+- **The runner's registration file is named by
+  [`runner.file`](https://code.forgejo.org/forgejo/runner/src/commit/d86d3195ac851bcfed165e692c76e5c44d47b4a9/internal/pkg/config/config.example.yaml#L23)
+  in its own config**, resolved relative to the daemon's working
+  directory, not to the config file's own directory. The
+  [runner guide's configuration section](https://forgejo.org/docs/latest/admin/actions/installation/binary/#configuration)
+  says the runner has no default config location and needs `-c`
+  explicitly, which is why `RUNNER_CONFIG` has no fallback; that same
+  guide looks the latest version up at `data.forgejo.org`, while the
+  script asks `code.forgejo.org` — both answer, so no fallback is added
+  there either.
 - **No read-only Forgejo command loads `app.ini` without a side effect.**
   Running `dump` with `--help`, or `doctor check` with `--list`, exits 0
   with a nonexistent `--config` — the CLI prints help before the config is
-  looked at, so neither proves anything about the config. `doctor check
-  --run paths` does load `app.ini` and needs no database, but when
-  `[security] INTERNAL_TOKEN` or `[oauth2] JWT_SECRET` are missing it
-  writes them into `app.ini`, reflows the file, and sets its mode to
-  `0600`; it also creates `data/tmp/package-upload` under the work path.
-  Checked against forgejo 16.0.5. The pre-stop checks therefore prove only
-  that the binary runs as `FORGEJO_USER` and that the account can read the
-  config and write `BACKUP_DIR`.
+  looked at, so neither proves anything about the config.
+  [`doctor check --run paths`](https://forgejo.org/docs/latest/admin/command-line/#doctor-check)
+  ([`services/doctor/paths.go`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/services/doctor/paths.go))
+  does load `app.ini` and needs no database, but when
+  [`[security] INTERNAL_TOKEN`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/security.go#L415-L430)
+  or
+  [`[oauth2] JWT_SECRET`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/security.go#L128-L135)
+  are missing it writes them into `app.ini`,
+  [reflows the file, and sets its mode to `0600`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/config_provider.go#L293-L294);
+  it also creates
+  [`data/tmp/package-upload`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/packages.go#L72-L78)
+  under the work path. Checked against forgejo 16.0.5. The pre-stop
+  checks therefore prove only that the binary runs as `FORGEJO_USER` and
+  that the account can read the config and write `BACKUP_DIR`.
 
 ## Shell style
 
@@ -489,7 +618,9 @@ There is no Forgejo install on the development machine, so testing is split.
   literal; a name only in the keys before the first section resolves
   from there; a self-reference in `[server]` falls to that default
   section; nested references resolve; a cycle terminates; values without
-  `%(` and with a lone `%` are unchanged.
+  `%(` and with a lone `%` are unchanged. The two-key cycle is the case
+  that found the first design's depth counter did not terminate in usable
+  time; a cap is not a termination proof, run the pathological input.
 - **Version parsers, tested against real output.** Download the binary and
   feed its `--version` output to `installed_forgejo` / `installed_runner`, or
   stub the binary with a one-line script that echoes the real string.
@@ -590,6 +721,14 @@ Patterns that self-review reliably misses.
   thing" carries zero coverage until the verification path runs again. The
   script was rewritten once from memory after the original was lost, and was
   re-verified against a real release before being trusted.
+- **A reviewer's symptom can be right while its remedy is wrong.** Two
+  Copilot findings asked for relative work paths to be resolved against
+  `WorkingDirectory=`; Forgejo's `InitWorkPathAndCfgProvider` refuses them
+  with `log.Fatal` instead, so the right fix was to refuse too, and the
+  "false conflict" half of the finding was real in a different form
+  (`os.SameFile`, not string equality). Before implementing a remedy that
+  says "Forgejo does X with this value", read the function that consumes
+  the value.
 - **When fixing one half of a contract, grep for the other half.** Pairs in
   this repo: the shared `parse_forgejo_version` / `parse_runner_version`
   parsers, used by both `installed_*` and the post-download check — a
@@ -606,11 +745,15 @@ Patterns that self-review reliably misses.
 - **Review the rendered text, not just the changed lines.** The hardening
   section of `README.md` is followed by an operator editing a live server.
   A wrong `app.ini` key or drop-in directive fails silently or locks them
-  out. Check every key name against Forgejo's configuration cheat sheet.
+  out. Check every key name against
+  [Forgejo's configuration cheat sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/).
 - **Report outcomes faithfully.** Say which paths ran and which did not.
 - **End with a fresh-context review.** Before opening a PR, have the final
   diff read by a reviewer who has seen only the diff, and ask "do these hunks
   agree with each other?", not "is each hunk correct?".
+- **If it is wrong, it is wrong.** A sentence the source contradicts is
+  corrected in place, in the same change that cites the source. No separate
+  "rewordings" section, no hedge, no leaving it because it was there first.
 
 ## Out of scope
 
@@ -630,7 +773,19 @@ Patterns that self-review reliably misses.
 - `.vscode/settings.json` sets `"markdownlint.config": {"MD024": false}`.
 - Wrap prose at 80 columns. A single shell command in a fenced block may run
   longer so it stays one command.
-- Bare URLs go in angle brackets.
+- Cite with inline links, `[text](url)`, where the link text is the words
+  of the claim.
+- A URL that has to stand alone goes in angle brackets.
+- **Every URL is checked by fetching it.** `tmp/verify-links.sh` (gitignored,
+  recreate it from the description here if it is gone) extracts every
+  `https://` URL from the README, AGENTS.md and the script, requires HTTP
+  200, requires a `#fragment` to match an element id on the page, requires
+  a `#Lnn` fragment on a pinned source link to exist and to contain the
+  phrase the fact quotes, and checks CVE ids through MITRE's API because
+  cve.org itself answers 200 for any id. Run it after any change that adds
+  or moves a link. Source links are pinned to the commits named in the
+  Facts preamble; when a fact is re-verified against a newer commit, move
+  the pin and the line numbers together.
 
 ## GitHub releases
 
