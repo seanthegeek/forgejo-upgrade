@@ -30,12 +30,12 @@ split:
    the one addition (a one-line header naming the repository path and
    branch and, from a reviewer's second round on, the files changed since
    that reviewer's previous round), and includes `make test-live` when the
-   diff touches any function AGENTS.md's Testing section names for it. A
-   pull request from a fork is run from a checkout of this repository
-   with the fork's head fetched into it and named on the right of the
-   diff command, which is one further substitution, because the harness
-   loads the working tree's `CLAUDE.md` and `AGENTS.md` as the reviewer's
-   own instructions before it reads the prompt at all.
+   diff touches any function AGENTS.md's Testing section names for it. On a
+   pull request from a fork the round is advisory, because the harness
+   hands the reviewer the session's own snapshot of `CLAUDE.md` and
+   `AGENTS.md` as instructions before it reads the prompt, and reviewing
+   the fork means reading the fork's tree; see "Review discipline" in
+   AGENTS.md.
    - **The rounds run on Opus.** Each one is a fresh subagent with
      `model: "opus"` that has seen none of the work and reads the
      committed diff. Fix what it finds, commit, and run another Opus
