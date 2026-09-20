@@ -972,11 +972,11 @@ Patterns that self-review reliably misses.
   reading this diff again. A later round by the same reviewer is scoped:
   the header names the files changed since that reviewer's previous round,
   and that reviewer reads those whole and the rest of the diff only for
-  agreement with them, resting on the author's word that its own earlier
-  round covered the rest, so a fix that adds new surface is reviewed in
-  full without the whole diff being re-read every time. A reviewer no
-  earlier round used gets no files-changed line and reads the whole diff,
-  however many rounds another model has already run.
+  agreement with them, resting on the author's word that an earlier round
+  by that same reviewer covered the rest, so a fix that adds new surface
+  is reviewed in full without the whole diff being re-read every time. A
+  reviewer that no earlier round used gets no files-changed line and reads
+  the whole diff, however many rounds another model has already run.
   A Copilot round with zero findings on the final commit,
   suppressed comments included, is part of "done."
   [Copilot code review reads AGENTS.md and CLAUDE.md
