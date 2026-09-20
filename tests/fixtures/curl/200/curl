@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for `curl -w '%{http_code}'` answering a healthy service.
+printf '200'

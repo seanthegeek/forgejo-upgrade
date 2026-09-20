@@ -4,7 +4,6 @@ forgejo-runner-*-linux-*
 *.asc
 *.sha256
 *.zip
-defs.sh
 
 # Secrets and local overrides - never commit these
 .env
@@ -37,5 +36,6 @@ desktop.ini
 
 # Scratch space
 tmp/
+coverage/
 *.tmp
 *.log

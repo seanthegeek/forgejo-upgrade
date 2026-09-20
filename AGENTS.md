@@ -8,10 +8,12 @@ downloads a release, checks the GPG signature and sha256, backs up, swaps the
 binary keeping the old one, restarts the service, and verifies health.
 `README.md` documents usage and a hardening guide for the two services.
 
-No application code, no database, no CI. The deliverable is a script an
+No application code and no database. The deliverable is a script an
 operator runs as root on a machine they cannot afford to break, so caution in
 the script beats cleverness. It is developed on a machine that does not run
-Forgejo and deployed elsewhere by hand.
+Forgejo and deployed elsewhere by hand. CI on GitHub and Forgejo runs the
+linter, the test suites and coverage on every pull request and on every push
+to `main`; see "Testing" below.
 
 ## Conventions
 
@@ -664,211 +666,232 @@ and
 
 ## Testing
 
-There is no Forgejo install on the development machine, so testing is split.
+There is no Forgejo install on the development machine, so the suite is
+split into an offline half and a live half. `tests/helpers.bash` documents
+the helper API (`in_script`, `snippet_file`, `stub_path`, `fake_bin`,
+`source_lines`, `skip_unless`, the `assert_*` functions) in its own comments;
+read it before writing a new test.
 
-- **Verification path, tested for real.** Source the definitions (everything
-  above the `# --- main` marker) and call `fetch_and_verify` against a current
-  release. The runner binary is about 20 MB and is the cheap one to use.
-- **Prove the negative half.** After a passing verification, append a byte to
-  the downloaded file and confirm the same gpg check rejects it. A signature
-  check that has only ever been seen passing guards nothing.
-- **`fetch_sha256`, tested alone as well as through `fetch_and_verify`.**
-  Call it directly against a real URL that 404s (an existing release path
-  with the filename changed) and confirm it returns 1 with no file left
-  behind; against an unresolvable host and confirm it dies with the
-  transport-error message; and against a URL or stub that answers some
-  other status and confirm it dies with the HTTP-status message.
-- **A download that cannot succeed, through `fetch_and_verify`.** Call it
-  for a version that does not exist (`0.0.0`, say) and confirm it dies with
-  the "could not download" message, not with anything about a signature:
-  bash drops `set -e` inside the `$(...)` both callers use, so an unchecked
-  `curl` failure would fall through to the GPG check and be reported as an
-  unverifiable signature.
-- **The exec probe, against a `noexec` filesystem.** `unshare -Urm` gives a
-  mount namespace without root:
-  `unshare -Urm bash -c 'mount --bind D D && mount -o remount,bind,noexec D D
-  && ...'` over a directory under `tmp/`. Point `TMPDIR` at it when sourcing
-  the definitions and confirm `fetch_and_verify` dies with the `TMPDIR`
-  message before it downloads anything; with an ordinary directory the probe
-  passes and the download proceeds.
-- **The key-refresh path, tested for real.** Point `GNUPGHOME` at a fresh,
-  empty directory (`mktemp -d`, `chmod 700`), skip `ensure_key`, and call
-  `fetch_and_verify` directly: confirm the log shows "refreshing the pinned
-  key", the key gets imported, and the second attempt passes. Then, in
-  that same empty `GNUPGHOME`, point `KEYSERVER` at an unresolvable host
-  and confirm it dies on the signature error instead of passing.
-- **`gpg_verdict`, tested with synthetic status text.** Feed hand-written
-  `GPG_STATUS` strings straight to `gpg_verdict`, without running gpg: a
-  `VALIDSIG` plus `EXPKEYSIG` (or `EXPSIG`) must print `expired`, a
-  `VALIDSIG` plus `REVKEYSIG` must print `revoked`, a `VALIDSIG` ending in
-  a different fingerprint must print `other-key`, `BADSIG` must print
-  `bad-signature`, `NO_PUBKEY` or `ERRSIG` must print `missing-key`, and
-  an empty string must print `unverifiable`. For the expired and revoked
-  cases, `gpg_valid_sig`'s own predicate must still fail even though
-  `VALIDSIG` is present. The real release's status from the test above,
-  with its `KEYEXPIRED` lines for older subkeys, must still pass
-  `gpg_valid_sig`, since `KEYEXPIRED` is not one of the rejected records.
-- **`ini_get`, tested against a temp ini file.** A key assigned twice must
-  return the last value; a third assignment left empty must return
-  nothing, the same as unset; and a key that exists only in another
-  section must not be returned for the section being queried.
-- **`ini_get` interpolation, tested against a temp ini file.**
-  `LOCAL_ROOT_URL = %(PROTOCOL)s://%(HTTP_ADDR)s:%(HTTP_PORT)s/` with
-  those three keys set must give the assembled URL; a missing name stays
-  literal; a name only in the keys before the first section resolves
-  from there; a self-reference in `[server]` falls to that default
-  section; nested references resolve; a cycle terminates; values without
-  `%(` and with a lone `%` are unchanged. The two-key cycle is the case
-  that found the first design's depth counter did not terminate in usable
-  time; a cap is not a termination proof, run the pathological input. A
-  referenced value containing `&` (say `HTTP_ADDR = /run/a&b/forgejo.sock`)
-  must come back with the `&` intact; unquoted, bash's
-  `patsub_replacement` turns it into the reference again.
-- **Version parsers, tested against real output.** Download the binary and
-  feed its `--version` output to `installed_forgejo` / `installed_runner`, or
-  stub the binary with a one-line script that echoes the real string.
-- **Confirm you are testing the edited code.** Sourcing a `defs.sh` extracted
-  earlier in the session silently tests the old script. Regenerate it after
-  every edit, or source directly from the script.
-- **Service orchestration, not testable here.** The stop, backup, install,
-  start, and health check sequence runs only on a Forgejo host. Read it
-  carefully, keep it simple, and say plainly in the summary that it was not
-  executed.
-- **Never run `forgejo`, `runner`, or `rollback` on the development
-  machine.** They require root and would stop services that do not exist
-  here. `check` and the sourced verification functions are the only safe
-  invocations locally.
-- Run `forgejo-upgrade.sh check` after any change to `latest_tag`; it hits
-  the live API.
-- **Settings resolution, tested against a stub, not a real unit.** Put a
-  fake `systemctl` on `PATH` under `tmp/bin/` that prints the captured real
-  `systemctl show` formats (see "Documented install layout" above) for a
-  fixed set of units, and run `forgejo-upgrade.sh settings` against that.
-  Never point `resolve_forgejo_settings` or `resolve_runner_settings` at a
-  real unit on this machine; there isn't one. A fake `app.ini` under
-  `tmp/etc/`, reachable through `FORGEJO_CONFIG`, is how the `WORK_PATH`
-  precedence and the `--rollback` resolution get exercised: point a stub
-  unit's env at it to check that `app.ini` wins over `Environment=`/
-  `--work-path` and warns on a mismatch, and call
-  `resolve_forgejo_settings --rollback` with `FORGEJO_BIN` pointed at a
-  missing file to confirm only the binary check is skipped. Add a stub
-  runner unit with no `WorkingDirectory=` and confirm `RUNNER_HOME`
-  resolves to `/`; an unknown unit still falls back to `/home/runner`. A
-  relative operator override (for example `FORGEJO_CONFIG=tmp/etc/app.ini`,
-  `BACKUP_DIR=backups`, or `RUNNER_HOME=runner`) must make `settings` warn
-  and every other invocation die with the relative-path message. Add a
-  stub Forgejo unit with no `User=` and confirm `FORGEJO_USER` resolves to
-  `root`; an unknown unit still resolves to `git`. Add a stub unit whose
-  `Environment=` sets `FORGEJO_WORK_DIR` to one directory while its
-  `ExecStart=` also carries `--work-path` pointing at another, and confirm
-  `FORGEJO_WORK_PATH` resolves to the flag's value. Set `FORGEJO_WORK_PATH`
-  in the environment to a path that conflicts with `WORK_PATH` in the stub
-  `app.ini` and confirm `settings` only warns while `forgejo` and
-  `rollback forgejo` die on the conflict; an equal value passes silently.
-  With no units and no binaries — the real `PATH` on the development
-  machine — `settings` must print exactly the two "not installed" lines
-  and nothing else, and `check` must print "not installed" and "-" for
-  both components and exit 0 even when `curl` fails, since an absent
-  component is never asked about. Every existing stub unit's output must
-  stay byte-identical to what it printed before this change. Add stub
-  units with a relative `--work-path` and with a relative
-  `FORGEJO_WORK_DIR` in `Environment=`, and a stub `app.ini` with a
-  relative `WORK_PATH`, and confirm `settings` warns with Forgejo's own
-  "must be absolute path" wording while `forgejo` and `rollback forgejo`
-  die on it; an app.ini whose `LOCAL_ROOT_URL` uses `%(...)s` references
-  must show the expanded URL in `settings`; `same_dir` on a directory
-  and a symlink to it must agree. Add stub units that are loaded but whose
-  `ExecStart` comes back empty or in another shape, and confirm `settings`
-  warns and marks the binary as a guess while `resolve_forgejo_settings` /
-  `resolve_runner_settings` without `--tolerant` die, `--rollback` included.
-- **`install_binary`, exercised from the sourced definitions under
-  `tmp/`, without root.** Set a `user.*` extended attribute and an ACL
-  on a fake old binary with a 2020 modification time, install a fake new
-  file over it, and confirm the new file has the new contents, the old
-  mode, the attribute and the ACL, and a current modification time, and
-  that `.prev` has the old contents with the same attribute and ACL.
-  `install -o`/`-g` with your own ids needs no root. This is the one
-  part of the install sequence that can run here; the stop, backup,
-  start and health check still cannot. Also: a directory at `.prev` must
-  make `install_binary` fail with both that directory and the destination
-  untouched; a symlink at `.prev` pointing at an unrelated file must end
-  with `.prev` a regular file holding the old binary and the link's target
-  unchanged; and `require_prev_slot` must pass for an absent or regular
-  `.prev` and die for a directory or a symlink, a dangling one included,
-  naming the type it found. A symlink pointing at an *executable* file is
-  the case worth keeping a test for: `[[ -x ]]` alone passes it, so check
-  that `require_prev_slot` still dies on it with `[[ -x ]]` shown passing
-  on the same link as a control. `rollback`'s refusal of a directory at the
-  binary path is reviewed, not run, since `rollback` is never run here, and
-  `mv -fT`'s behavior on a directory and on a symlink was measured by hand
-  (see the Facts section). Its refusal of a `.prev` that is not a plain
-  file is the same `require_prev_slot` already exercised above, called from
-  `rollback` before its own `-x` check; that the call is there, inside
-  `rollback` and ahead of the `systemctl stop`, is checked structurally by
-  line number rather than by running the command.
-- **The dump archive's pre-creation, exercised under `tmp/` without root.**
-  The dump itself is never run here — it needs a Forgejo install and a
-  stopped service — so what is tested is the primitive and the placement.
-  Under `umask 022`: `install -m 600 /dev/null f`, then a truncating write
-  into `f` (what Forgejo's `os.Create` does), must leave `f` at mode 600
-  holding the new content; the same write with no pre-creation, as a
-  control, must give 644. Then check structurally, by line number and
-  failing loudly on zero matches, that the pre-creation line sits inside
-  `upgrade_forgejo`, after its `systemctl stop` and immediately before the
-  `as_forgejo dump --file "$dump"` line.
-- **`healthz`, tested against a `curl` stub.** Put a one-line `curl` stub
-  on `PATH` under `tmp/badbin/` that prints `302` and confirm `healthz`
-  fails; swap in one that prints `200` and confirm it passes. This needs
-  no new dependency such as a local HTTP server. Also run it with
-  `CURL_HOME` pointing at a directory whose `.curlrc` says `location` and
-  `FORGEJO_URL=http://codeberg.org`: the real answer is a 302 to https, and
-  `healthz` must fail rather than report the 200 found after the redirect.
-- **`rollback_needs_manual_start`, exercised directly from the sourced
-  definitions**, since `rollback` itself is never run on this machine. It
-  is `[[ $1 == forgejo && -n $2 && ${2%%.*} != "${3%%.*}" ]]`: exit status
-  0 ("manual start needed") only for Forgejo with a known current version
-  whose major differs from the previous one — including when the previous
-  version cannot be read, which counts as differing — and exit status 1
-  ("start as usual") for a matching major, an empty current version (the
-  binary is too damaged to report one), or the runner. `--no-start` is
-  handled by `rollback` itself before the function is ever called, not by
-  the function. Feed it these version-pair cases and check the exit
-  status each way. `rollback` itself refuses a `.prev` whose version does
-  not parse before stopping anything, so the empty-previous case in the
-  function is a guard, not a path it reaches.
-- **The lock, from the sourced definitions, with `LOCK_DIR` pointed under
-  `tmp/`.** A first `acquire_lock` succeeds; a second call, in a subshell so
-  it does not exit the test, dies naming the pid recorded by the first as
-  still running; overwrite the `pid` file with a pid that is not running
-  (for example `999999`) and confirm the message changes to "not running"
-  and gives the `rm -r` remedy; confirm the directory is gone once the
-  shell that acquired it exits, since `on_exit` releases it. Then, with
-  `umask 0777` so that `mkdir` succeeds but the pid write fails, run
-  `acquire_lock` in a fresh `bash` and confirm the lock directory is gone
-  afterwards: the lock is owned from the moment `mkdir` succeeds, not from
-  the pid write. Point `LOCK_DIR` at a path whose parent does not exist, and
-  at a plain file, and confirm both die with the "could not create the lock
-  directory" message quoting `mkdir`'s own, not the "another run holds the
-  lock" one; an existing directory must still give the latter.
-- **The recovery command from `on_exit`, from the sourced definitions.** Set
-  `STOPPED_SVC`, `STOPPED_KIND=forgejo`, `STOPPED_BIN` and
-  `BINARY_REPLACED=1`, with `FORGEJO_SERVICE`, `FORGEJO_BIN` and a
-  `BACKUP_DIR` containing a space in the environment when sourcing, put a
-  stub `journalctl` on `PATH`, and let the shell exit: the printed
-  `rollback` line must start with those three overrides shell-quoted, or
-  with `sudo` followed by them when `SUDO_USER` is set in the environment
-  when sourcing, and the rollback command must come before any
-  `systemctl start`/`status` hint. Repeat with `STOPPED_KIND=runner` and a
-  `RUNNER_BIN` override and confirm only the runner overrides appear. Then
-  set `BINARY_REPLACED=2` with a file at `STOPPED_BIN.prev` and confirm the
-  message says it was not moved back and gives the rollback command; remove
-  the file and confirm the back-in-place wording.
-- **`FORGEJO_DB_TYPE`, against stub `app.ini` files.** One stub with
-  `[database] DB_TYPE = postgres` and one with `sqlite3`; an unreadable
-  config must resolve to unknown, not a guess. Since the upgrade prompt and
-  backup warning cannot be run here (they need a real stop), print
-  `db_is_external`, `backup_note`, and `restore_hint` straight from the
-  sourced definitions for each stub, rather than only reading the source.
+### How to run
+
+Install the dev-only tools once, on Debian or Ubuntu:
+
+```bash
+sudo apt install bats kcov attr acl shellcheck
+```
+
+The suite needs bats 1.5.0 or later, for `run --separate-stderr`; every
+test file says so with `bats_require_minimum_version 1.5.0` and stops with
+a clear message on an older one. Debian 12 (1.8), Ubuntu 24.04 (1.10) and
+Ubuntu 26.04 (1.13) are fine. Two Ubuntu releases need a detour: 24.04 has
+no `kcov` package — it is in 22.04 and again from 25.04 on — so leave
+`kcov` out of that line there and let CI measure coverage; and 22.04 ships
+bats 1.2.1, so there install everything but `bats` from apt, clone
+[bats-core](https://github.com/bats-core/bats-core) somewhere, and point
+every target at it with `BATS=/path/to/bats-core/bin/bats`.
+
+This is separate from the script's own dependency list under "No new
+dependencies," above, which is unchanged.
+
+- `make lint` — shellcheck over the script, `tests/helpers.bash`, every
+  `.bats` file, and the fixture stub binaries.
+- `make test` — the offline suite, `tests/unit/`. No network.
+- `make test-live` — the suite that talks to the release API and a
+  keyserver, `tests/live/`.
+- `make coverage` / `make coverage-all` — kcov line coverage of the offline
+  suite alone, or of both suites merged.
+- `bats tests/unit/lock.bats` — run one file.
+- `bats --filter 'process that is gone' tests/unit` — run one test,
+  matched against (part of) its `@test` name.
+- `make test BATS=/path/to/bats-core/bin/bats` — when `bats` is not on
+  `PATH`; every target takes a `BATS`, `KCOV`, or `SHELLCHECK` override the
+  same way.
+
+### The one harness rule, and why
+
+Script code runs in a child bash, started by `in_script`, and never in the
+bats process itself. Sourcing `forgejo-upgrade.sh` arms `trap on_exit EXIT`,
+and bats owns the `EXIT` trap of its own test process, so sourcing the
+script there would replace it and bats would lose track of the test. The
+script's source guard — `if (return 0 2>/dev/null); then return 0; fi`,
+right after `# --- main` and before the command dispatch — is what makes
+`source forgejo-upgrade.sh` load the definitions and skip the dispatch.
+Everything above the guard still runs: sourcing creates `WORKDIR` and arms
+the `EXIT`, `INT` and `TERM` traps, which is what the harness relies on for
+cleanup. The guard detects sourcing by whether `return` outside a function
+succeeds, not by comparing `$0`, because the test suite deliberately sets
+`$0` to the script's own path. That is on purpose: inside `in_script`, `$0`
+has to be the real path so that `rollback_command`'s `%q "$0"` and the
+usage text's `sed -n '2,36p' "$0"` see it rather than bash's own.
+
+Two facts about that child bash are worth recording. kcov traces a bash
+program through a `PS4` that expands `${BASH_SOURCE}`, and a command at the
+top level of a `bash -c` string has no `BASH_SOURCE`: once the script's
+`set -u` is in force such a snippet dies with an unbound-variable error, so
+a bare `bash -c` that sources the script passes under plain bats and fails
+under `make coverage`. That is why every snippet is written to a file by
+`snippet_file` and run from there. `snippet_file` also sets `$0` through
+`BASH_ARGV0`, which needs bash 5.0 or later; CI has 5.2 on trixie and 5.3
+on Ubuntu 26.04, so an older bash is the one thing that would break the
+harness rather than a test.
+
+### Unit versus live
+
+`tests/unit/` is offline: stub `systemctl`, `curl`, and `journalctl`
+binaries and fixture `app.ini`/`runner.yml` files stand in for a real host.
+`tests/live/` talks to the real release API, a real keyserver, and
+downloads a real runner release.
+
+Run `make test-live` after any change to `fetch_and_verify`, `ensure_key`,
+`latest_tag`, `fetch_sha256`, `gpg_valid_sig`/`gpg_verdict`, or either
+version parser, and put its output in the change summary — lint or the
+offline suite alone is not evidence for these functions. What it proves,
+one sentence per file:
+
+- `fetch_and_verify.bats` — a real runner release downloads, verifies, and
+  is reported as the version it says it is; one appended byte to a
+  verified copy is rejected with the verdict `bad-signature`.
+- `fetch_sha256.bats` — a real 404 makes `fetch_sha256` return 1 silently,
+  leaving no error page behind; the "not published" wording an operator
+  reads belongs to its caller, `fetch_and_verify`, and is checked
+  structurally where it is written. A host that does not resolve stops the
+  run with the transport-error message.
+- `key_refresh.bats` — an empty keyring is rescued by refreshing exactly
+  the pinned key, and an unreachable keyserver stops the run with the
+  "could not refresh the key" message — `fetch_and_verify`'s own wording,
+  not `die_bad_signature`'s.
+- `latest_tag.bats` — the release API's `tag_name` reads correctly for
+  both repos, and `check` really asks it: on a host whose units systemd
+  does not know, a `FORGEJO_BIN` the operator names makes Forgejo present,
+  and the table comes back with that binary's version and a live `N.N.N`
+  in the latest column, while the unnamed runner stays "not installed"
+  with a dash and no call made for it.
+- `healthz_curlrc.bats` — `-q` defeats a `.curlrc` saying `location`
+  against a real redirecting server. The source audit of the same fact
+  needs no network and lives in `tests/unit/healthz.bats`.
+
+The `unshare`-based noexec tests in `exec_probe.bats` skip where a noexec
+bind mount cannot be made without root: under Docker's default seccomp
+profile, and on GitHub's Ubuntu runner image, where the namespace can be
+entered once AppArmor's restriction is lifted with `sysctl` but the mount
+inside it is still refused, so both CIs skip them and a developer machine
+is where they run. In `install_binary.bats` the ACL
+case skips without `setfacl` and `getfacl`, and the extended-attribute case
+skips without `setfattr` or `python3`.
+
+### What cannot run anywhere
+
+The stop, backup, install, start, health-check sequence in
+`upgrade_forgejo` and `upgrade_runner`, and `rollback` itself, run only on
+a Forgejo host. They are reviewed, not executed, and every summary says so
+plainly. `check`, `settings`, and the sourced functions are the only safe
+invocations on this machine — never run `forgejo-upgrade.sh forgejo`,
+`runner`, or `rollback` here.
+
+What the suite does for those paths instead is structural, through
+`source_lines` (which fails loudly on zero matches, never a bare
+`grep -q`): `rollback.bats` checks that `require_prev_slot` runs before
+the `-x` test and before `systemctl stop`, and that `BINARY_REPLACED=2` is
+set before the `mv` that consumes `.prev`; `dump.bats` checks that the
+dump archive's 0600 pre-creation sits between the stop and the
+`dump --file` call.
+
+Some bullets in "Facts about Forgejo release artifacts" have no test at
+all, because they describe what Forgejo, its runner, or systemd does
+rather than what this script does, or because seeing them needs a running
+install. They are listed here so the gap is a decision on the record and
+not mistaken for coverage:
+
+- **`latest` is across release lines**, and the major-version confirmation
+  it forces: the prompt lives inside `upgrade_forgejo`, which never runs
+  here.
+- **Forgejo and the runner are versioned independently**: the script never
+  compares the two, so there is nothing to assert.
+- **`TimeoutStopSec=infinity` and `runner.shutdown_timeout`**: systemd and
+  the runner do that waiting, not the script.
+- **No read-only Forgejo command loads `app.ini` without a side effect**
+  (`doctor check --run paths` writes `INTERNAL_TOKEN` and creates
+  directories): it is the reason the pre-stop checks prove only what they
+  prove, and confirming it needs a real install.
+- **The runner's registration survives a binary swap**: what the script
+  does about it — resolve `RUNNER_REG_FILE` and say so when the file is
+  missing — is covered in `settings.bats`; that the daemon still accepts
+  the registration afterwards is upstream's behaviour.
+- **An older Forgejo binary refuses to start on a migrated database**:
+  `rollback_needs_manual_start` and the wording around it are tested; the
+  `log.Fatal` itself is Forgejo's.
+- **`forgejo dump`'s zip is not a safe database restore for PostgreSQL or
+  MySQL**: the messages that follow from it are tested in `db_type.bats`
+  and `on_exit.bats`; the upstream bug is not ours to reproduce.
+
+The lossy `argv[]` is not on that list: the script's own answer to it —
+reading a `-c` path back truncated at the space and refusing it before
+anything is stopped — is the `fj-space` case in `settings.bats`.
+
+### Rules for new work
+
+- Every bullet in "Facts about Forgejo release artifacts" has a test that
+  names it, in its `@test` sentence or its file's header comment, unless it
+  is on the exemption list in "What cannot run anywhere," above. Adding a
+  bullet to that list is a decision to write down, not a way out of a test.
+- When a fact moves or changes, its test changes in the same commit.
+- A new failure message gets its exact wording asserted, not just its
+  presence.
+- A structural check goes through `source_lines`, never a bare `grep -q`.
+- A test that needs a real unit uses the stub at
+  `tests/fixtures/bin/systemctl` (it answers for the stock `forgejo` and
+  `forgejo-runner` units, plus the `fj-*` and `runner-*` fixture units) or
+  `tests/fixtures/nounits/systemctl` for "nothing installed."
+- Fixtures live in `tests/fixtures/`, never in `tmp/`.
+- kcov's coverage percentage is a trend, not a truth: its notion of an
+  executable bash line is a heuristic, and the paths in "What cannot run
+  anywhere," above, are why the number will never reach 100.
+
+### What each test file covers
+
+`tests/unit/`
+
+- `guard.bats` — sourcing is silent and exits 0; a bogus subcommand still
+  prints usage and exits 1; the usage `sed` range ends on the last header
+  line.
+- `version.bats` — the version parsers and `installed_forgejo`/
+  `installed_runner`, including a failing or unparseable binary.
+- `gpg.bats` — `gpg_verdict`/`gpg_valid_sig` over synthetic status text,
+  and every `die_bad_signature` wording.
+- `fetch_sha256.bats` — the 500, transport-error, and 404 cases, against a
+  curl stub.
+- `exec_probe.bats` — `require_exec_workdir` and a real noexec bind mount.
+- `ini_get.bats` — duplicate keys, last-wins, and the full interpolation
+  matrix, including the two-key cycle and the `&` case.
+- `yaml_get.bats` — `runner.file` and neighboring keys from a fixture
+  runner config.
+- `settings.bats` — the whole resolver matrix for both components,
+  including the two stock units' blocks asserted line for line, the
+  `http+unix` socket, and the `-c` path that `argv[]` truncates.
+- `check.bats` — `check` with nothing installed: "not installed," no API
+  call, exit 0.
+- `install_binary.bats` — attribute, ACL, and mode preservation, and every
+  `.prev` shape (absent, file, directory, symlink, dangling symlink).
+- `rollback.bats` — `rollback_needs_manual_start`, and the structural
+  ordering guarantees inside `rollback`.
+- `dump.bats` — the 0600 pre-creation primitive and its placement.
+- `healthz.bats` — the stub-curl 200/302/refused cases and the `-q`
+  source audit.
+- `lock.bats` — `acquire_lock` and its failure and release paths.
+- `on_exit.bats` — the printed rollback command, its overrides, the
+  `sudo` prefix, and its ordering before the start/status hint.
+- `db_type.bats` — `FORGEJO_DB_TYPE` and `db_is_external`/`backup_note`/
+  `restore_hint`.
+
+`tests/live/`
+
+- `fetch_and_verify.bats` — the real runner release, verified and parsed,
+  and the tampered-file rejection.
+- `fetch_sha256.bats` — a real 404 and a real host that does not resolve.
+- `healthz_curlrc.bats` — a real redirecting server against `.curlrc`.
+- `key_refresh.bats` — a real empty-keyring refresh and a real
+  unreachable keyserver.
+- `latest_tag.bats` — the real release API for both repos, and `check`.
 
 ## Review discipline
 
@@ -877,7 +900,8 @@ Patterns that self-review reliably misses.
 - **Nothing is pre-verified.** A rewrite of a function that "does the same
   thing" carries zero coverage until the verification path runs again. The
   script was rewritten once from memory after the original was lost, and was
-  re-verified against a real release before being trusted.
+  re-verified against a real release before being trusted. A rewrite is
+  trusted again once `make test` and `make test-live` both pass.
 - **A reviewer's symptom can be right while its remedy is wrong.** Two
   Copilot findings asked for relative work paths to be resolved against
   `WorkingDirectory=`; Forgejo's `InitWorkPathAndCfgProvider` refuses them

@@ -1,0 +1,119 @@
+# GitHub Actions. This file and .forgejo/workflows/ci.yml are kept step for
+# step the same so the two can be diffed; every place they differ carries a
+# comment saying why.
+#
+# The suites need no root and touch no service: they run the script's own
+# functions in child shells under tests/. Nothing here installs
+# forgejo-upgrade.sh or starts a unit.
+name: CI
+
+# A push to main and every pull request. Not every push: a branch that has a
+# pull request open would otherwise run twice per push, once for each event.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Not `ubuntu-latest`. That label is still Ubuntu 24.04, and 24.04 is the
+    # one release with no `kcov` package at all: kcov is in 22.04 (38) and
+    # again from 25.04 onwards (43), but was never published for 24.04. Ubuntu
+    # 26.04 also carries bats 1.13 and shellcheck 0.11.0, the same shellcheck
+    # the repo is linted with by hand, so a lint finding here is the finding a
+    # developer sees. Move this label forward when 26.04 is retired; if you
+    # move it back to `ubuntu-latest`, kcov has to come from somewhere else.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Install the test tools
+        # bats runs the suite, kcov measures it, shellcheck is `make lint`;
+        # acl and attr provide setfacl/setfattr for the install_binary tests,
+        # and gnupg, curl, make, git and ca-certificates are what the script
+        # and the live suite call. Unlike the Forgejo job this one is not root,
+        # hence sudo.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bats kcov shellcheck acl attr gnupg curl make git ca-certificates
+
+      - name: Lint the shell
+        run: make lint
+
+      - name: Run both suites under kcov
+        # The three noexec-probe tests in tests/unit/exec_probe.bats skip
+        # here: Ubuntu's runner image restricts unprivileged user namespaces
+        # through AppArmor, and lifting that with sysctl (tried in this
+        # workflow's second run) only got as far as the namespace; the bind
+        # mount inside it was still refused. They run on a developer machine.
+        # `coverage-all` runs tests/unit, then tests/live, then merges the two
+        # kcov reports into coverage/all. The live suite downloads a
+        # forgejo-runner release (about 20 MB) from code.forgejo.org and
+        # refreshes the pinned signing key from the keyserver, so this job
+        # needs outbound network access. A failing test fails the step, and the
+        # step fails the job: there is deliberately no continue-on-error.
+        run: make coverage-all
+
+      - name: Report the coverage percentage
+        # kcov's idea of an executable line in bash is a heuristic, so this
+        # number is a trend, not a truth. The Forgejo workflow prints the same
+        # line to the log only: Forgejo documents no job-summary equivalent.
+        run: |
+          line=$(make --no-print-directory report REPORT_DIR=coverage/all)
+          printf '%s\n' "$line"
+          printf '## Coverage\n\n%s\n\nThe full HTML report is in the `coverage` artifact.\n' \
+            "$line" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the coverage report
+        # v6 of checkout and upload-artifact run on Node 24; the v4 majors
+        # target Node 20, which GitHub's runners now warn is deprecated. The
+        # Forgejo workflow stays on its own v4s: there the actions run with
+        # the container's node, and its artifact action is a patched fork.
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage
+          path: coverage/all
+          if-no-files-found: error
+
+  markdownlint:
+    # Nothing here is version specific, unlike the test job, so this one can
+    # follow `ubuntu-latest`.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Write the markdownlint configuration
+        # AGENTS.md: "All markdown must pass VS Code's default markdownlint
+        # config" and ".vscode/settings.json sets markdownlint.config to
+        # {"MD024": false}". VS Code's markdownlint extension applies its own
+        # default, `{"MD013": false}` (its extension.mjs, `defaultConfig`),
+        # and then the workspace setting on top, so the config an editor
+        # actually uses is both keys together. Writing it here rather than as
+        # a repo config file keeps the one source of truth in
+        # .vscode/settings.json. The name has to end in an extension
+        # markdownlint-cli2 recognises (.json here) or the tool refuses the
+        # file.
+        # A block scalar, because a plain YAML scalar may not contain ": ".
+        run: |
+          printf '{ "MD013": false, "MD024": false }\n' > /tmp/markdownlint.json
+
+      - name: Lint the markdown
+        # Pinned to the action's major tag. v24.2.0 bundles markdownlint-cli2
+        # 0.23.2, which is the version the Forgejo workflow asks npx for, so
+        # both CIs lint with the same rules.
+        uses: DavidAnson/markdownlint-cli2-action@v24
+        with:
+          config: /tmp/markdownlint.json
+          globs: |
+            README.md
+            AGENTS.md
+            CLAUDE.md

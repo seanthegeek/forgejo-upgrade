@@ -590,17 +590,31 @@ hand it. Where that code runs decides what a malicious workflow can reach.
 
 ## Development
 
-The script must pass `shellcheck` with no findings. There is no test suite; the
-verification path can be exercised without a Forgejo install by sourcing the
-function definitions and downloading
-[a real release](https://code.forgejo.org/forgejo/runner/releases):
+The script must pass `shellcheck` with no findings, and the test suite must
+pass. The suite uses [bats-core](https://github.com/bats-core/bats-core); the
+tools are dev-only and are never needed on the Forgejo host:
 
 ```bash
-sed '/^# --- main/,$d' forgejo-upgrade.sh > ./defs.sh && source ./defs.sh && fetch_and_verify "$RUNNER_REPO" "forgejo-runner-13.1.0-linux-$(arch)" 13.1.0
+sudo apt install bats kcov attr acl shellcheck
+make lint        # shellcheck over the script, the helpers and every stub
+make test        # the offline suite in tests/unit, no network
+make test-live   # tests/live: downloads a real runner release and verifies it
+make coverage    # kcov line coverage of the offline suite
 ```
 
-See `AGENTS.md` for conventions and the facts about Forgejo's release artifacts
-that the script depends on.
+The suite needs bats 1.5.0 or later. Ubuntu 24.04 has no `kcov` package —
+it is in 22.04 and again from 25.04 on — so leave `kcov` out of that line
+there; `make lint` and `make test` work without it, and CI measures
+coverage. Ubuntu 22.04 ships bats 1.2.1, too old for the suite: install the
+rest from apt, clone [bats-core](https://github.com/bats-core/bats-core),
+and run the targets with `BATS=/path/to/bats-core/bin/bats`.
+
+`make test-live` is the verification path: it downloads
+[a real release](https://code.forgejo.org/forgejo/runner/releases), checks its
+signature and checksum, and proves a tampered copy is rejected. Both suites
+run in CI on every pull request and on every push to `main`. See `AGENTS.md`
+for how the suite is laid out, the conventions, and the facts about Forgejo's
+release artifacts that the script depends on.
 
 ## License
 

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+#
+# A stand-in for systemctl, so the resolvers can be tested against units this
+# machine does not have. It answers only the three read-only forms the script
+# uses:
+#
+#   systemctl show UNIT -p PROP --value
+#   systemctl is-active --quiet UNIT
+#   systemctl list-units --all --type=service --no-legend --plain PATTERN...
+#
+# `show` is parsed by option, not by position, because the script's unit_prop
+# passes "-p PROP --value" and a positional stub silently answers the wrong
+# question when an argument moves. Every answer copies the real output shape
+# documented in AGENTS.md, "Documented install layout": ExecStart comes back as
+# one record, `{ path=... ; argv[]=... ; ignore_errors=no ; ... }`, and
+# Environment as one line of shell-quoted KEY=VALUE words.
+#
+# Paths that have to point at a fixture are built from $FIXTURES, which the
+# test harness exports, so this works from any checkout.
+#
+# `stop` and `start` are the commands no test may reach: they would act on the
+# real machine if this stub ever fell off PATH, so reaching them here is a
+# loud failure rather than a quiet success.
+set -uo pipefail
+
+FIXTURES=${FIXTURES:-/nonexistent-fixtures}
+
+cmd=${1:-}
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+  show) ;;
+  is-active)
+    # Nothing in the unit suite wants a service reported as running. 3 is what
+    # systemctl exits for an inactive unit.
+    exit 3 ;;
+  list-units)
+    # die_unknown_unit's best-effort hint. An empty listing is a real answer:
+    # this host has no service with forgejo, gitea or runner in its name.
+    exit 0 ;;
+  stop|start|restart|reload|daemon-reload|kill)
+    printf 'systemctl stub: "%s" must never be reached by a test\n' "$cmd" >&2
+    exit 99 ;;
+  *)
+    exit 0 ;;
+esac
+
+unit="" prop=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p)             prop=${2:-}; shift 2 ;;
+    -p*)            prop=${1#-p}; shift ;;
+    --property=*)   prop=${1#--property=}; shift ;;
+    --value)        shift ;;
+    -*)             shift ;;
+    *)              [[ -n $unit ]] || unit=$1
+                    shift ;;
+  esac
+done
+
+# One ExecStart record in systemd's own shape: $1 is the program, the rest are
+# the arguments after it.
+exec_record() {
+  local path=$1; shift
+  local argv=$path
+  [[ $# -eq 0 ]] || argv="$path $*"
+  printf '{ path=%s ; argv[]=%s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n' \
+    "$path" "$argv"
+}
+
+FJ=/usr/local/bin/forgejo
+RUN=/usr/local/bin/forgejo-runner
+
+# The script's unit_name spells .service out; strip it again so each unit is
+# written once below.
+case "${unit%.service}" in
+
+  # --- the two stock units, exactly as the shipped unit files describe them ---
+
+  forgejo)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  forgejo-runner)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$RUN" daemon -c "$FIXTURES/runner.yml" ;;
+      User)             echo runner ;;
+      WorkingDirectory) echo /home/runner ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- work-path sources -----------------------------------------------------
+
+  # Environment= alone. The quoted entry with a space in it is the case the
+  # script's single `eval` exists for: a plain word split would cut it in two.
+  fj-env)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      Environment)      echo 'FORGEJO_WORK_DIR=/srv/env "FJ_SPACED=has space"' ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # Both sources set, disagreeing: Forgejo's readFromArgs runs after
+  # readFromEnv and the flag's Set overwrites, so /srv/flag must win.
+  fj-both)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" --work-path /srv/flag web -c "$FIXTURES/ini/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      Environment)      echo 'FORGEJO_WORK_DIR=/srv/env' ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # A relative --work-path, which Forgejo itself refuses with
+  # "--work-path must be absolute path".
+  fj-rel)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" --work-path data web -c "$FIXTURES/ini/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # The same, from the environment instead.
+  fj-relenv)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      Environment)      echo 'FORGEJO_WORK_DIR=data' ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- the user the service runs as -------------------------------------------
+
+  # No User= at all. systemd runs a system service like that as root, so the
+  # script must resolve root here, not the documented git.
+  fj-nouser)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/app.ini" ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- ExecStart that cannot be read back ---------------------------------------
+
+  # Loaded, but systemctl show prints nothing for ExecStart.
+  fj-empty-exec)
+    case $prop in
+      LoadState)        echo loaded ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # Loaded, but ExecStart comes back in some other shape than the record.
+  fj-odd-exec)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        echo 'ExecStart=/opt/runner daemon' ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- units pointed at a particular app.ini ---------------------------------------
+
+  # WORK_PATH in app.ini against FORGEJO_WORK_DIR in the unit: app.ini wins and
+  # the disagreement is warned about.
+  fj-wp)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/wp.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      Environment)      echo 'FORGEJO_WORK_DIR=/srv/env' ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # LOCAL_ROOT_URL written with the documented %(NAME)s references.
+  fj-localroot)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/localroot.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # A relative WORK_PATH in app.ini.
+  fj-relwp)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/relwp.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # An install that listens on a unix socket, so the health check has to dial
+  # HTTP_ADDR rather than a host and port.
+  fj-unix)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/unix.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- an argv[] that cannot be read back faithfully ---------------------------
+
+  # A -c path with a space in it. systemd prints argv[] with a plain space
+  # between arguments and no quoting, so this comes back as two words and the
+  # script reads the config path truncated at the space. The pre-stop checks
+  # then refuse it, which is the whole point: it is refused rather than
+  # guessed at.
+  fj-space)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/has space/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- units pointed at a particular database ----------------------------------
+
+  fj-sqlite)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/sqlite.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  fj-postgres)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/postgres.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- runner variants ---------------------------------------------------------------
+
+  # No WorkingDirectory=. systemd starts a system service in /, so RUNNER_HOME
+  # resolves to / and the .runner registration file is looked for there.
+  runner-nowd)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$RUN" daemon -c "$FIXTURES/runner.yml" ;;
+      User)             echo runner ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # A runner whose config and registration file really exist under the
+  # fixtures, so RUNNER_REG_FILE resolves to a file that is there.
+  runner-c)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$RUN" daemon -c "$FIXTURES/runner.yml" ;;
+      User)             echo runner ;;
+      WorkingDirectory) echo "$FIXTURES/runnerhome" ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- everything else ------------------------------------------------------------------
+
+  # systemctl show exits 0 for a unit systemd has never heard of; LoadState is
+  # the only thing that says so.
+  *)
+    case $prop in
+      LoadState) echo not-found ;;
+      *)         echo "" ;;
+    esac ;;
+esac

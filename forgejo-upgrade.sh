@@ -1965,6 +1965,17 @@ check() {
 
 # --- main --------------------------------------------------------------------
 
+# When this file is sourced rather than run (the test suite does this), stop
+# here: every definition above is loaded and the command dispatch below is
+# skipped. `return` outside a function is only valid in a sourced file, which
+# is exactly the case being detected: the subshell exits 0 when this file is
+# being sourced and non-zero when it is being run, and the error message bash
+# prints in the second case is dropped. Comparing ${BASH_SOURCE[0]} with $0 is
+# the more familiar spelling but the wrong test here: $0 is whatever the
+# caller set, and the test suite sets it to this script's own path on purpose,
+# so that rollback_command and the usage text print the real one.
+if (return 0 2>/dev/null); then return 0; fi
+
 case "${1:-}" in
   check)    check ;;
   settings) settings ;;

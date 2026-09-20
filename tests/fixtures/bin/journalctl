@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stand-in for journalctl. on_exit prints the last journal lines for a service
+# it left stopped; the tests only need that call to succeed and be visible.
+printf 'stub journal\n'

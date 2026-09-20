@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# A reverse proxy in front of a Forgejo that is down: it redirects to the
+# login page. healthz must call that unhealthy, since only 200 is healthy.
+printf '302'

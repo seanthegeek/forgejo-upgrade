@@ -37,14 +37,13 @@ unavailable.
   re-read the "Facts about Forgejo release artifacts" section in `AGENTS.md`.
   Every item there was a bug found by running against a real release, and
   the obvious-looking code was the wrong code.
-- After any change to those functions, run the verification test from the
-  Testing section against the current runner release, including the
-  tampered-file rejection, and include the output in your summary. Lint
-  alone is not evidence here.
+- After any change to those functions, run `make test-live` (and
+  `make test`) and include the output in your summary. Lint alone is not
+  evidence here.
 - This machine does not run Forgejo. Do not claim the stop, backup, install,
   start sequence was tested. Say it was reviewed and not executed.
 - Do not install the script into `/usr/local/sbin` or touch systemd units on
   this machine.
-- Session scratch directories are cleared between days. Keep test helpers
-  such as an extracted `defs.sh` inside the repo where `.gitignore` already
-  excludes them, not in the scratchpad.
+- Tests and fixtures live in `tests/`; nothing is extracted from the script
+  any more. If `bats` is not installed, run it from a checkout with
+  `make test BATS=/path/to/bats-core/bin/bats`.

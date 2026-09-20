@@ -1,0 +1,142 @@
+# Forgejo Actions. This file and .github/workflows/ci.yml are kept step for
+# step the same so the two can be diffed; every place they differ carries a
+# comment saying why.
+#
+# `runs-on: docker` is the label a forgejo-runner registers by default, and
+# the one the Forgejo Actions documentation uses. If your runner registered
+# different labels, use one of those instead: `forgejo-runner register` prints
+# the labels it is registering, and they are stored in the runner's `.runner`
+# file. The container image has to carry node, because the JS actions below
+# (checkout, upload-artifact) are run with the container's own node; the
+# documentation warns that a custom image without node breaks them.
+#
+# The image is node:22-trixie rather than the documentation's node:20-bookworm
+# for two reasons. Debian bookworm has no `kcov` in main at all (only in
+# bookworm-backports), while trixie carries kcov 43 and a newer bats; and
+# markdownlint-cli2 0.23, the version the GitHub workflow's action bundles,
+# declares `engines.node >= 22`. Any image with a node new enough for that and
+# a Debian suite carrying kcov will do; going back to bookworm means adding a
+# bookworm-backports line for kcov, and going back to node 20 means pinning an
+# older markdownlint-cli2 in the last job.
+#
+# The suites need no root on the host and touch no service: they run the
+# script's own functions in child shells under tests/. Nothing here installs
+# forgejo-upgrade.sh or starts a unit.
+name: CI
+
+# A push to main and every pull request. Not every push: a branch that has a
+# pull request open would otherwise run twice per push, once for each event.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Forgejo does not document enforcement of `permissions`; it is kept identical
+# to the GitHub workflow so the two files diff cleanly, and either way the job
+# only ever reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: docker
+    container:
+      image: node:22-trixie
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        # Forgejo resolves a bare `actions/...` against its own configured
+        # action host, so the documentation recommends spelling the URL out.
+        # The GitHub workflow is on checkout@v6 for Node 24; here the action
+        # runs with the container's own node, so the mirror's v4 is kept.
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Install the test tools
+        # bats runs the suite, kcov measures it, shellcheck is `make lint`;
+        # acl and attr provide setfacl/setfattr for the install_binary tests,
+        # and gnupg, curl, make, git and ca-certificates are what the script
+        # and the live suite call. Unlike the GitHub job this one already runs
+        # as root inside the container, so there is no sudo.
+        #
+        # shellcheck comes from trixie-backports: trixie itself has 0.10.0,
+        # and the repo is linted by hand with 0.11.0, which is what the GitHub
+        # job gets from Ubuntu 26.04. Same version, same findings, everywhere.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          echo 'deb http://deb.debian.org/debian trixie-backports main' \
+            > /etc/apt/sources.list.d/backports.list
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bats kcov acl attr gnupg curl make git ca-certificates
+          apt-get install -y --no-install-recommends -t trixie-backports shellcheck
+
+      - name: Lint the shell
+        run: make lint
+
+      - name: Run both suites under kcov
+        # `coverage-all` runs tests/unit, then tests/live, then merges the two
+        # kcov reports into coverage/all. The live suite downloads a
+        # forgejo-runner release (about 20 MB) from code.forgejo.org and
+        # refreshes the pinned signing key from the keyserver, so this job
+        # needs outbound network access. A failing test fails the step, and the
+        # step fails the job: there is deliberately no continue-on-error.
+        #
+        # One test differs here: the noexec probe builds its mount namespace
+        # with `unshare -Urm`, which the container runtime's default seccomp
+        # profile blocks, so those tests call `skip` and the rest of the file
+        # runs. The GitHub job skips them too (its runner image refuses the
+        # bind mount inside a user namespace); they run on a developer machine.
+        run: make coverage-all
+
+      - name: Report the coverage percentage
+        # kcov's idea of an executable line in bash is a heuristic, so this
+        # number is a trend, not a truth. Only the log gets it: Forgejo
+        # documents no equivalent of GitHub's job summary, which is where the
+        # GitHub workflow also writes it.
+        run: |
+          line=$(make --no-print-directory report REPORT_DIR=coverage/all)
+          printf '%s\n' "$line"
+
+      - name: Upload the coverage report
+        # The mirror of actions/upload-artifact does not work against
+        # Forgejo's artifact API; its own repository page says to use this
+        # patched fork instead.
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/all
+          if-no-files-found: error
+
+  markdownlint:
+    runs-on: docker
+    container:
+      image: node:22-trixie
+    steps:
+      - name: Check out the repository
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Write the markdownlint configuration
+        # AGENTS.md: "All markdown must pass VS Code's default markdownlint
+        # config" and ".vscode/settings.json sets markdownlint.config to
+        # {"MD024": false}". VS Code's markdownlint extension applies its own
+        # default, `{"MD013": false}` (its extension.mjs, `defaultConfig`),
+        # and then the workspace setting on top, so the config an editor
+        # actually uses is both keys together. Writing it here rather than as
+        # a repo config file keeps the one source of truth in
+        # .vscode/settings.json. The name has to end in an extension
+        # markdownlint-cli2 recognises (.json here) or the tool refuses the
+        # file.
+        # A block scalar, because a plain YAML scalar may not contain ": ".
+        run: |
+          printf '{ "MD013": false, "MD024": false }\n' > /tmp/markdownlint.json
+
+      - name: Lint the markdown
+        # The GitHub workflow uses DavidAnson/markdownlint-cli2-action@v24,
+        # which is a JS action on the GitHub marketplace and has no Forgejo
+        # mirror. v24.2.0 bundles markdownlint-cli2 0.23.2, so that exact
+        # version is pinned here and both CIs lint with the same rules.
+        run: |
+          npx --yes markdownlint-cli2@0.23.2 \
+            --config /tmp/markdownlint.json \
+            README.md AGENTS.md CLAUDE.md

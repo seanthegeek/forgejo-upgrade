@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# For the cases that must fail before anything is downloaded: if this prints,
+# a check that was supposed to come first did not.
+echo "CURL-WAS-CALLED"
