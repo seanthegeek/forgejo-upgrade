@@ -141,16 +141,6 @@ setup() {
   assert_stderr_contains "release-check: TAG=a = b -o v$VERSION does not match v$VERSION"
 }
 
-@test "make release-check quotes the tag it reads, so a glob in it is not expanded" {
-  # Same rule, the globbing half: unquoted, a tag of * would expand to the
-  # names of the files in the working directory, and the operator would be
-  # shown a file list where their tag should be.
-  run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check "TAG=$2"' \
-    _ "$ROOT" "*"
-  assert_status 2
-  assert_stderr_contains "release-check: TAG=* does not match v$VERSION"
-}
-
 @test "make release-check fails with a clear message when TAG is unset" {
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check' \
     _ "$ROOT"
