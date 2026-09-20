@@ -948,12 +948,15 @@ Patterns that self-review reliably misses.
   review prompt," below; the working agent adds no change-specific
   questions to it, because a checklist written by the author of the change
   points the reviewer at what the author already thought of — anything
-  specific the author wants checked goes in the PR description for
-  Copilot, or is checked by the author directly. The review runs on the
-  final diff, and after every round of fixes it runs again, fresh, until a
-  pass comes back with nothing required. A Copilot round with zero
-  findings on the final commit is part of "done," because Copilot is the
-  one reviewer that gets no prompt from us.
+  specific the author wants checked goes in the PR description for the
+  human reviewer, or is checked by the author directly. The review runs on
+  the final diff, and after every round of fixes it runs again, fresh,
+  until a pass comes back with nothing required. A Copilot round with zero
+  findings on the final commit is part of "done."
+  [Copilot code review reads AGENTS.md and CLAUDE.md
+  too](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review),
+  so it is not unprompted; it is required because it did not write the
+  change and sees only the PR, not the session.
 - **A value from outside the repo is untrusted the moment it reaches a
   shell line.** A tag name, a ref, a CI environment value, a file name:
   each one is data, not code, until something in the diff proves
@@ -967,22 +970,27 @@ Patterns that self-review reliably misses.
   shell on a host that cannot afford to break, so review every command in
   `README.md` and `docs/` the way the hardening section already is: safe
   on failure (`curl -qfsS`, `&&` chaining, no partial install left
-  behind), and each flag explained once, the first time it appears.
+  behind), and each flag that changes what happens on failure explained
+  once, the first time it appears — those are the ones an operator must
+  understand before running the command.
 - **If it is wrong, it is wrong.** A sentence the source contradicts is
   corrected in place, in the same change that cites the source. No separate
   "rewordings" section, no hedge, no leaving it because it was there first.
 
 ### The fresh-context review prompt
 
-Hand this to the reviewer exactly as written; the only thing to change is
-the branch base named in the diff command, if it is not `main`.
+Hand this to the reviewer exactly as written. Fetch the branch base first,
+so the diff command below resolves against it. The only additions allowed
+are the branch base named in the diff command, if it is not `main`, and a
+one-line header naming the repository path and branch.
 
 ```text
-You are reviewing the diff `git diff main..HEAD` of this repository, and
+You are reviewing the diff `git diff main...HEAD` of this repository, and
 you have seen none of the work that produced it. Read AGENTS.md first,
 then read every changed file whole, not just the diff hunks. This is a
-read-only review: run the linter and the offline test suite, and do not
-change any file.
+read-only review: run the linter and the offline test suite, and
+`make test-live` when the diff touches any function AGENTS.md's Testing
+section names for it, and do not change any file.
 
 Your job is to find what is wrong, not to confirm that the change works.
 Security comes first, but it is not the whole job: treat every value that
