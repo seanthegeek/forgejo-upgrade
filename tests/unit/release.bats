@@ -1,0 +1,146 @@
+#!/usr/bin/env bats
+# SCRIPT_VERSION, the version/--version dispatch arms, CHANGELOG.md's shape,
+# and the release-check/release-notes Makefile targets that the release
+# workflows run before publishing anything. AGENTS.md's Review-discipline
+# pairs bullet names SCRIPT_VERSION, the first released CHANGELOG.md
+# section, and the tag as a triple that has to agree; this file is where
+# that agreement is checked.
+
+# Single-quoted snippets below carry "$0" and "$1" for a child bash, and one
+# regex is matched against the script's own text; the "$0" in each has to
+# survive unexpanded. That is exactly what SC2016 warns about, and exactly
+# what is wanted here, so it is turned off for the file rather than repeated
+# at every call.
+# shellcheck disable=SC2016
+
+# `run --separate-stderr` is a 1.5.0 feature; saying so here turns bats'
+# BW02 warning into a version requirement it checks.
+bats_require_minimum_version 1.5.0
+
+setup() {
+  load ../helpers
+  common_setup
+  ROOT=$(dirname "$SCRIPT")
+  CHANGELOG=$ROOT/CHANGELOG.md
+  VERSION=$(sed -n 's/^SCRIPT_VERSION=//p' "$SCRIPT")
+}
+
+# --- SCRIPT_VERSION and the dispatch arms ------------------------------------
+
+@test "SCRIPT_VERSION is set and looks like a semantic version" {
+  # A single source_lines call both proves the assignment exists and pins
+  # its shape, per "An ad hoc check that matches nothing is broken, not
+  # green": a typo here (a stray v prefix, a missing patch number) fails
+  # loudly rather than reading back whatever is there.
+  source_lines '^SCRIPT_VERSION=[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+@test "the header's Usage list names the version subcommand" {
+  source_lines '^#   forgejo-upgrade\.sh version '
+}
+
+@test "'version' prints exactly forgejo-upgrade <version> on stdout and exits 0" {
+  run --separate-stderr "$SCRIPT" version
+  assert_status 0
+  assert_equal "forgejo-upgrade $VERSION" "$output"
+  assert_equal "" "$stderr"
+}
+
+@test "'--version' prints the same thing as 'version'" {
+  run --separate-stderr "$SCRIPT" --version
+  assert_status 0
+  assert_equal "forgejo-upgrade $VERSION" "$output"
+  assert_equal "" "$stderr"
+}
+
+# --- CHANGELOG.md -------------------------------------------------------------
+
+@test "CHANGELOG.md's first two ## headings are Unreleased and the current version" {
+  local headings first second
+  headings=$(grep -E '^## \[' "$CHANGELOG")
+  first=$(sed -n '1p' <<<"$headings")
+  second=$(sed -n '2p' <<<"$headings")
+  assert_equal "## [Unreleased]" "$first"
+  # The date itself is not pinned to today: CHANGELOG.md is written once,
+  # at merge time, and the tag can follow later. Only the shape is checked.
+  if [[ ! $second =~ ^\#\#\ \[${VERSION//./\\.}\]\ -\ [0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    printf 'expected second heading "## [%s] - YYYY-MM-DD", got: %s\n' "$VERSION" "$second" >&2
+    return 1
+  fi
+}
+
+@test "every ## [x] heading in CHANGELOG.md has a matching link reference" {
+  local heading name bad=""
+  while IFS= read -r heading; do
+    name=$(sed -E 's/^## \[([^]]+)\].*/\1/' <<<"$heading")
+    grep -qE "^\[$(sed 's/[.[\*^$/]/\\&/g' <<<"$name")\]: " "$CHANGELOG" \
+      || bad+="no link reference for [$name]"$'\n'
+  done < <(grep -E '^## \[' "$CHANGELOG")
+  if [[ -n $bad ]]; then
+    printf '%s' "$bad" >&2
+    return 1
+  fi
+}
+
+# --- make release-check and make release-notes -------------------------------
+
+@test "make release-check passes when TAG matches SCRIPT_VERSION" {
+  run --separate-stderr bash -c \
+    'cd "$1" && make --no-print-directory release-check TAG="v$2"' \
+    _ "$ROOT" "$VERSION"
+  assert_status 0
+  assert_output_contains "matches SCRIPT_VERSION=$VERSION"
+}
+
+@test "make release-check fails naming the mismatch when TAG is wrong" {
+  run --separate-stderr bash -c \
+    'cd "$1" && make --no-print-directory release-check TAG=v9.9.9' \
+    _ "$ROOT"
+  assert_status 2
+  assert_stderr_contains "TAG=v9.9.9 does not match v$VERSION"
+}
+
+@test "make release-check fails with a clear message when TAG is unset" {
+  run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check' \
+    _ "$ROOT"
+  assert_status 2
+  assert_stderr_contains "release-check: TAG is not set"
+}
+
+@test "make release-check fails when the renamed CHANGELOG section no longer matches" {
+  # The Makefile reads CHANGELOG.md relative to CURDIR; CHANGELOG ?= CHANGELOG.md
+  # lets this test point the same recipe at a doctored copy instead of
+  # copying the whole repo into a scratch directory.
+  local doctored=$BATS_TEST_TMPDIR/CHANGELOG.md
+  sed "s/## \[$VERSION\] - /## [Released] - /" "$CHANGELOG" > "$doctored"
+  run --separate-stderr bash -c \
+    'cd "$1" && make --no-print-directory release-check TAG="v$2" CHANGELOG="$3"' \
+    _ "$ROOT" "$VERSION" "$doctored"
+  assert_status 2
+  assert_stderr_contains "$doctored's first released section is '## [Released]"
+}
+
+@test "make release-notes prints a non-empty body with no ## heading line" {
+  run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-notes' \
+    _ "$ROOT"
+  assert_status 0
+  [[ -n $output ]] || { echo "release-notes printed nothing" >&2; return 1; }
+  if grep -qE '^## ' <<<"$output"; then
+    printf 'release-notes output still contains a "## " heading line:\n%s\n' "$output" >&2
+    return 1
+  fi
+}
+
+@test "make release-notes fails on an empty section" {
+  local doctored=$BATS_TEST_TMPDIR/CHANGELOG.md
+  awk -v ver="[$VERSION]" '
+    index($0, "## " ver " ") == 1 { print; getline; print ""; skipping = 1; next }
+    skipping && /^## / { skipping = 0 }
+    !skipping { print }
+  ' "$CHANGELOG" > "$doctored"
+  run --separate-stderr bash -c \
+    'cd "$1" && make --no-print-directory release-notes CHANGELOG="$2"' \
+    _ "$ROOT" "$doctored"
+  assert_status 2
+  assert_stderr_contains "release-notes: empty body for [$VERSION]"
+}
