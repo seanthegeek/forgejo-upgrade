@@ -43,7 +43,8 @@ unavailable.
   re-read the "Facts about Forgejo release artifacts" section in `AGENTS.md`.
   Every item there was a bug found by running against a real release, and
   the obvious-looking code was the wrong code.
-- After any change to those functions, run `make test-live` (and
+- After any change to those functions, or to any other function AGENTS.md's
+  Testing section names for the live suite, run `make test-live` (and
   `make test`) and include the output in your summary. Lint alone is not
   evidence here.
 - This machine does not run Forgejo. Do not claim the stop, backup, install,
