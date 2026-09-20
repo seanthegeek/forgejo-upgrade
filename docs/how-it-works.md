@@ -1,7 +1,7 @@
 # How the script works
 
 The command table for each subcommand is in the README's
-[Usage](usage.nd) section. This page walks through what a
+[Usage](useage.nd) section. This page walks through what a
 server or runner upgrade actually does, step by step.
 
 A server upgrade runs these steps in order:
