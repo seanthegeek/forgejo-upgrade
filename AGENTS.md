@@ -925,7 +925,7 @@ Patterns that self-review reliably misses.
   range that prints it; the subcommand `case` and the command table in
   `README.md`; the settings tables in `docs/configuration.md` and the
   two `resolve_*_settings` functions; the header's override list and the
-  README tables.
+  tables in `docs/configuration.md`.
 - **An ad hoc check that matches nothing is broken, not green.** A `grep -q`
   aimed at the wrong string produces a passing-looking result. Make one-off
   checks fail loudly on zero matches.
