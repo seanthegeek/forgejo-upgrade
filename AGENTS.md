@@ -965,11 +965,13 @@ Patterns that self-review reliably misses.
   says the same true thing less well); those are fixed without another
   round. A finding that changes what runs, what an operator would paste,
   or what a sentence claims about the code or an upstream source gets
-  another round. A later round is scoped: the header names the files
-  changed since the previous round, and the reviewer reads those whole and
-  the rest of the diff only for agreement with them, so a fix that adds
-  new surface is reviewed in full without the whole diff being re-read
-  every time. A sentence that is wrong is in that second group
+  another round. A later round by the same reviewer is scoped: the
+  header names the files changed since that reviewer's previous round, and
+  it reads those whole and the rest of the diff only for agreement with
+  them, so a fix that adds new surface is reviewed in full without the
+  whole diff being re-read every time. A reviewer that has not seen the
+  diff before gets no files-changed line and reads all of it, however many
+  rounds have already run. A sentence that is wrong is in that second group
   however small the edit, because an operator acts on these documents.
   A Copilot round with zero findings on the final commit,
   suppressed comments included, is part of "done."
@@ -1016,9 +1018,10 @@ because a fetch never moves the local `main`, and a merge base taken from a
 stale local branch would put already-merged commits into the review. Only
 the one substitution allowed (the branch base named in the diff command,
 if it is not `origin/main`) and the one addition (a one-line header
-naming the repository path and branch and, from the second round on, the
-files changed since the previous round) may differ from that verbatim
-text. Two things the prompt's "do not change any file" does not forbid:
+naming the repository path and branch and, from a reviewer's second round
+on, the files changed since that reviewer's previous round) may differ
+from that verbatim text. Two things the prompt's "do not change any file"
+does not forbid:
 `tmp/linkcache` is gitignored scratch that running the checker writes —
 a successful fetch is cached there and never expires, while a failed one
 is refetched on every run — and clearing it (`rm -rf tmp/linkcache`)

@@ -22,15 +22,15 @@ split:
    that looks right is wrong and the failure is silent or leaves a server
    down. When in doubt, decide at planning time and note the choice in the
    plan.
-3. **Review with Opus in a loop, then once with Fable.** After
-   implementation, all work is reviewed in fresh context before it is
-   considered done. Every round, whichever model runs it, uses the prompt
-   in AGENTS.md's "The fresh-context review prompt" verbatim, apart from
-   the one substitution allowed (the branch base, if it is not
-   `origin/main`) and the one addition (a one-line header naming the
-   repository path and branch and, from the second round on, the files
-   changed since the previous round), and includes `make test-live` when
-   the diff touches any function AGENTS.md's Testing section names for it.
+3. **Review with Opus in a loop, then with Fable.** After implementation,
+   all work is reviewed in fresh context before it is considered done.
+   Every round, whichever model runs it, uses the prompt in AGENTS.md's
+   "The fresh-context review prompt" verbatim, apart from the one
+   substitution allowed (the branch base, if it is not `origin/main`) and
+   the one addition (a one-line header naming the repository path and
+   branch and, from a reviewer's second round on, the files changed since
+   that reviewer's previous round), and includes `make test-live` when the
+   diff touches any function AGENTS.md's Testing section names for it.
    - **The rounds run on Opus.** Each one is a fresh subagent with
      `model: "opus"` that has seen none of the work and reads the
      committed diff. Fix what it finds, commit, and run another Opus
@@ -39,16 +39,20 @@ split:
      operator would paste, or what a sentence claims about the code or an
      upstream source, including any sentence that is wrong, gets another
      round.
-   - **The final review runs on Fable**, once, on the final diff, and it
-     is the gate on "done". Wording-only findings are fixed without
-     another round. Anything substantive goes back through the Opus loop:
-     fix, commit, one Opus round scoped to the files changed since, then
-     Fable again.
+   - **Fable reviews last**, on the final diff. It is the last of the
+     model reviews, not the whole of "done": AGENTS.md's Copilot round
+     with zero findings on the final commit is part of that too. Fable has
+     seen none of the diff, so its first round carries no files-changed
+     line and reads all of it, however many Opus rounds came before.
+     Wording-only findings are fixed without another round. Anything
+     substantive goes back through the Opus loop — fix, commit, Opus
+     rounds until one finds nothing beyond wording — and then to Fable
+     again.
    - If Fable is unavailable, Opus runs the final review too, and the
      summary says the last review was Opus rather than claiming it was
      Fable.
 
-**PR reviews** must also use Fable, with Opus as the fallback if Fable is
+**PR reviews** run on Fable, with Opus as the fallback if Fable is
 unavailable.
 
 @AGENTS.md
