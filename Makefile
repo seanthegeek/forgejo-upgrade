@@ -96,9 +96,16 @@ clean:
 # forgotten TAG must stop the release rather than silently check v0.0.0.
 # TAG is read from the environment as "$${TAG}", never expanded as $(TAG)
 # into the recipe text: make substitutes $(TAG) before the shell sees the
-# line, so a tag such as v";id;# would run as a command. A variable given on
-# make's command line is exported to the recipe's environment, which is how
-# the release workflows pass it.
+# line, so a tag such as v";id;# would run as a command. The quotes around
+# "$${TAG}" carry their own weight, for a different reason: unquoted, a TAG
+# of `a = b -o vX.Y.Z` splits the comparison below into
+# `test a = b -o vX.Y.Z = vX.Y.Z`, which -o makes true, so a TAG that is
+# not the version would pass the gate that exists to stop exactly that. A
+# pushed tag cannot carry a space, so that one is reachable today only
+# through a hand-run make release-check TAG=..., and the quotes are what
+# stop the gate depending on git's ref-name rules staying as they are.
+# A variable given on make's command line is exported to the recipe's
+# environment, which is how the release workflows pass it.
 release-check:
 	@test -n "$${TAG:-}" || { \
 	  echo "release-check: TAG is not set; run as, e.g., make release-check TAG=v$(SCRIPT_VERSION)" >&2; \

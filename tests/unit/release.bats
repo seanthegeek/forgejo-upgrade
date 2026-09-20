@@ -127,6 +127,34 @@ setup() {
   fi
 }
 
+@test "make release-check quotes the tag it reads, so a splitting tag cannot pass the comparison" {
+  # The metacharacter case above covers the $(TAG)-versus-"${TAG}" half of the
+  # rule. This covers the other half: the quotes around "${TAG}" itself. The
+  # comparison is `test "${TAG}" = "vX.Y.Z"`, and unquoted the shell would
+  # split this tag into `test a = b -o vX.Y.Z = vX.Y.Z`, whose -o makes it
+  # true - so a TAG that is not the version would pass the gate that exists
+  # to stop exactly that. A pushed tag cannot carry a space, so this value
+  # stands in for any TAG a caller supplies by hand. The guard rests on
+  # /bin/sh's test implementing the obsolescent -o at seven arguments,
+  # which POSIX leaves unspecified above four; dash and bash both do, so it
+  # bites here and in CI, but a shell whose test errored instead would exit
+  # non-zero and pass this test with the quotes gone. The structural case
+  # below covers that shell. Quoted, it fails and
+  # the message names the tag whole.
+  run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check "TAG=$2"' \
+    _ "$ROOT" "a = b -o v$VERSION"
+  assert_status 2
+  assert_stderr_contains "release-check: TAG=a = b -o v$VERSION does not match v$VERSION"
+}
+
+@test "the TAG comparison in the Makefile is quoted, whatever the shell does" {
+  # The behavioural case above proves the gate flips, but only on a shell
+  # whose test implements the obsolescent seven-argument -o. This one pins
+  # the quotes themselves and holds on any shell: source_lines fails loudly
+  # when nothing matches, so it cannot pass by aiming at a string that moved.
+  source_lines '@test "\$\$\{TAG\}" = "v\$\(SCRIPT_VERSION\)"' "$ROOT/Makefile"
+}
+
 @test "make release-check fails with a clear message when TAG is unset" {
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check' \
     _ "$ROOT"
