@@ -999,9 +999,8 @@ Patterns that self-review reliably misses.
   parent's copy. Observed, not assumed, while preparing the
   `review-trust-boundary` branch: rounds were handed a `CLAUDE.md` several
   commits older than the working tree, one of them older than `origin/main`
-  itself. So
-  switching branches before spawning a reviewer changes nothing, and a
-  round spawned from a session that started on a fork's branch is
+  itself. So switching branches before spawning a reviewer changes nothing,
+  and a round spawned from a session that started on a fork's branch is
   steered by the fork's copies however the prompt is worded.
   No arrangement of this prompt fixes that, because the reviewer has to
   read the fork's tree to review it. So a fresh-context round on a fork's
@@ -1084,11 +1083,6 @@ header naming the repository path and branch and, from a reviewer's second
 round on, the files changed since that reviewer's previous round) may
 differ from that verbatim text.
 
-The same goes for the branch name in the header, which is the head branch:
-on a fork's pull request that string is chosen by the party under review and
-lands in the prompt by the same route, so write the pull request number or
-the head commit id there instead.
-
 Write that base yourself rather than pasting it from the forge.
 `git check-ref-format` rejects a space and a caret in a ref name but
 permits `;`, `&`, `|`, a backtick and `$(...)`, and the base lands both in
@@ -1098,14 +1092,20 @@ Quoting the whole argument, `"$BASE...HEAD"`, covers the shell line only:
 shell-safe quoted or not, and is still prompt-hostile. A project
 automating the substitution therefore resolves the base to a commit id and
 substitutes that id, never the name it was handed — in a script, not at an
-interactive prompt, `BASE=$(git rev-parse --verify "$raw^{commit}") ||
-exit 1`. A hex commit id cannot carry a `;`, a backtick or a
-sentence, so it is safe both on the shell line, which the prompt spells
+interactive prompt,
+`BASE=$(git rev-parse --verify "$raw^{commit}") || exit 1`.
+A hex commit id cannot carry a `;`, a backtick or a sentence, so it is
+safe both on the shell line, which the prompt spells
 unquoted, and in the prompt text the reviewer reads as instructions.
 Using `rev-parse --verify` as a name check alone would not do it: it is a
 liveness check and accepts a prompt-hostile name happily if a branch by
 that name exists. What protects is substituting its output, not consulting
 its exit status.
+
+The same goes for the branch name in the header, which is the head branch:
+on a fork's pull request that string is chosen by the party under review and
+lands in the prompt by the same route, so write the pull request number or
+the head commit id there instead.
 Dropping `--quiet` is what makes a failure visible, since `--quiet` exits 1
 in silence while the plain form prints `fatal: Needed a single revision`;
 the `|| exit 1` is what matters, because an unchecked failure leaves

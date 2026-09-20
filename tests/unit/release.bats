@@ -134,7 +134,11 @@ setup() {
   # split this tag into `test a = b -o vX.Y.Z = vX.Y.Z`, whose -o makes it
   # true - so a TAG that is not the version would pass the gate that exists
   # to stop exactly that. A pushed tag cannot carry a space, so this value
-  # stands in for any TAG a caller supplies by hand. Quoted, it fails and
+  # stands in for any TAG a caller supplies by hand. The guard rests on
+  # /bin/sh's test implementing the obsolescent -o at seven arguments,
+  # which POSIX leaves unspecified above four; dash and bash both do, so it
+  # bites here and in CI, but a shell whose test errored instead would exit
+  # non-zero and pass this test with the quotes gone. Quoted, it fails and
   # the message names the tag whole.
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check "TAG=$2"' \
     _ "$ROOT" "a = b -o v$VERSION"
