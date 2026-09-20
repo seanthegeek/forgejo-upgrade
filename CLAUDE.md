@@ -22,22 +22,38 @@ split:
    that looks right is wrong and the failure is silent or leaves a server
    down. When in doubt, decide at planning time and note the choice in the
    plan.
-3. **Review with Fable** (fall back to Opus only if Fable is unavailable).
-   After implementation, all work must be reviewed by Fable before it is
-   considered done. The review uses the prompt in AGENTS.md's "The
-   fresh-context review prompt" verbatim, apart from the one substitution
-   allowed (the branch base, if it is not `origin/main`) and the one
-   addition (a one-line header naming the repository path and branch and,
-   from the second round on, the files changed since the previous round),
-   and runs again after every round of fixes, on the final diff,
-   including `make test-live` when the diff touches any function
-   AGENTS.md's Testing section names for it, until a pass finds nothing
-   beyond wording (the text stays true and only reads better) — a
-   finding that changes what runs, what an operator would paste, or what
-   a sentence claims about the code or an upstream source, including any
-   sentence that is wrong, gets another round.
+3. **Review with Opus in a loop, then with Fable.** After implementation,
+   all work is reviewed in fresh context before it is considered done.
+   Every round, whichever model runs it, uses the prompt in AGENTS.md's
+   "The fresh-context review prompt" verbatim, apart from the one
+   substitution allowed (the branch base, if it is not `origin/main`) and
+   the one addition (a one-line header naming the repository path and
+   branch and, from a reviewer's second round on, the files changed since
+   that reviewer's previous round), and includes `make test-live` when the
+   diff touches any function AGENTS.md's Testing section names for it.
+   - **The rounds run on Opus.** Each one is a fresh subagent with
+     `model: "opus"` that has seen none of the work and reads the
+     committed diff. Fix what it finds, commit, and run another Opus
+     round, until a pass finds nothing beyond wording (the text stays true
+     and only reads better). A finding that changes what runs, what an
+     operator would paste, or what a sentence claims about the code or an
+     upstream source, including any sentence that is wrong, gets another
+     round.
+   - **Fable reviews last**, on the final diff, as a fresh subagent with
+     `model: "fable"` — the planning session has seen the work and cannot be
+     the reviewer. It is the last of the reviews in this model split, not
+     the whole of "done": AGENTS.md's Copilot round with zero findings on
+     the final commit is part of that too. No earlier round on this diff was
+     run by Fable, so its first round carries no files-changed line and
+     reads all of it, however many Opus rounds came before. Wording-only
+     findings are fixed without another round. Anything substantive goes
+     back through the Opus loop — fix, commit, Opus rounds until one finds
+     nothing beyond wording — and then to Fable again.
+   - If Fable is unavailable, the loop's last clean Opus pass stands as
+     the final review, and the summary says the last review was Opus
+     rather than claiming it was Fable.
 
-**PR reviews** must also use Fable, with Opus as the fallback if Fable is
+**PR reviews** run on Fable, with Opus as the fallback if Fable is
 unavailable.
 
 @AGENTS.md
