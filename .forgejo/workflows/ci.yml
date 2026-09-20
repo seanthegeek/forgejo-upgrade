@@ -24,8 +24,11 @@
 # forgejo-upgrade.sh or starts a unit.
 name: CI
 
+# A push to main and every pull request. Not every push: a branch that has a
+# pull request open would otherwise run twice per push, once for each event.
 on:
   push:
+    branches: [main]
   pull_request:
 
 # Forgejo does not document enforcement of `permissions`; it is kept identical
@@ -44,6 +47,8 @@ jobs:
       - name: Check out the repository
         # Forgejo resolves a bare `actions/...` against its own configured
         # action host, so the documentation recommends spelling the URL out.
+        # The GitHub workflow is on checkout@v6 for Node 24; here the action
+        # runs with the container's own node, so the mirror's v4 is kept.
         uses: https://code.forgejo.org/actions/checkout@v4
 
       - name: Install the test tools

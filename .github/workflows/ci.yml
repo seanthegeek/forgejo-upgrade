@@ -7,8 +7,11 @@
 # forgejo-upgrade.sh or starts a unit.
 name: CI
 
+# A push to main and every pull request. Not every push: a branch that has a
+# pull request open would otherwise run twice per push, once for each event.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -27,7 +30,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install the test tools
         # bats runs the suite, kcov measures it, shellcheck is `make lint`;
@@ -70,7 +73,11 @@ jobs:
             "$line" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the coverage report
-        uses: actions/upload-artifact@v4
+        # v6 of checkout and upload-artifact run on Node 24; the v4 majors
+        # target Node 20, which GitHub's runners now warn is deprecated. The
+        # Forgejo workflow stays on its own v4s: there the actions run with
+        # the container's node, and its artifact action is a patched fork.
+        uses: actions/upload-artifact@v6
         with:
           name: coverage
           path: coverage/all
@@ -82,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Write the markdownlint configuration
         # AGENTS.md: "All markdown must pass VS Code's default markdownlint
