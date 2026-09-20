@@ -759,10 +759,12 @@ one sentence per file:
   against a real redirecting server. The source audit of the same fact
   needs no network and lives in `tests/unit/healthz.bats`.
 
-The `unshare`-based noexec tests in `exec_probe.bats` skip where user
-namespaces are unavailable: under Docker's default seccomp profile, and on
-Ubuntu's GitHub runner image, which restricts them through AppArmor until
-the workflow lifts that with `sysctl`. In `install_binary.bats` the ACL
+The `unshare`-based noexec tests in `exec_probe.bats` skip where a noexec
+bind mount cannot be made without root: under Docker's default seccomp
+profile, and on GitHub's Ubuntu runner image, where the namespace can be
+entered once AppArmor's restriction is lifted with `sysctl` but the mount
+inside it is still refused, so both CIs skip them and a developer machine
+is where they run. In `install_binary.bats` the ACL
 case skips without `setfacl` and `getfacl`, and the extended-attribute case
 skips without `setfattr` or `python3`.
 

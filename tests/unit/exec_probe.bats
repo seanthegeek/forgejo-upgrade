@@ -26,11 +26,19 @@ setup() {
   mkdir -p "$NOEXEC"
 }
 
-# Skip the case unless a mount namespace can be made here.
+# Skip the case unless a noexec bind mount can really be made here without
+# root. The probe does the whole thing, not just `unshare -Urm true`: on
+# GitHub's Ubuntu runner the namespace can be entered once AppArmor's
+# restriction on unprivileged user namespaces is lifted, but the bind mount
+# inside it is still refused with "permission denied", and a guard that only
+# tried unshare let the test run and fail there. The probe mounts a scratch
+# directory, which the namespace drops again when the shell exits.
 need_userns() {
   skip_unless unshare
-  if ! unshare -Urm true 2>/dev/null; then
-    skip "unshare -Urm is not permitted here, so a noexec mount cannot be made without root"
+  local probe=$BATS_TEST_TMPDIR/userns-probe
+  mkdir -p "$probe"
+  if ! unshare -Urm sh -c 'mount --bind "$1" "$1" && mount -o remount,bind,noexec "$1" "$1"' sh "$probe" 2>/dev/null; then
+    skip "a noexec bind mount cannot be made here without root (unshare -Urm refused, or the mount inside it was), so the noexec case is not run"
   fi
 }
 
