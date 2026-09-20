@@ -950,11 +950,14 @@ Patterns that self-review reliably misses.
   questions to it, because a checklist written by the author of the change
   points the reviewer at what the author already thought of — anything
   specific the author wants checked goes in the PR description for the
-  human reviewer, or is checked by the author directly. The review runs on
-  the final diff, and after every round of fixes it runs again, fresh,
-  until a pass comes back with nothing required. A Copilot round with zero
-  findings on the final commit, suppressed comments included, is part of
-  "done."
+  human reviewer, or is checked by the author directly. The review runs
+  on the final diff and runs again, fresh, after every round of fixes,
+  until a pass finds nothing beyond minor prose (wording, a stale line
+  number, a comment); those are fixed without another round. A finding
+  that changes what runs, what an operator would paste, or what a
+  sentence claims about the code or an upstream source gets another
+  round. A Copilot round with zero findings on the final commit,
+  suppressed comments included, is part of "done."
   [Copilot code review reads AGENTS.md and CLAUDE.md
   too](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review#customizing-copilots-reviews-with-custom-instructions),
   so it is not unprompted; it is required because it did not write the
@@ -968,10 +971,11 @@ Patterns that self-review reliably misses.
   read that way; every `$(VAR)` the recipes expand today (`BATS`, `KCOV`,
   `SHELLCHECK`, `REPORT_DIR`, `CHANGELOG`, and the Makefile's own
   `SCRIPT`, `SCRIPT_VERSION`, `CURDIR`, `MAKE`, `SHELL_SOURCES`) is set by
-  the developer's `make` line, the Makefile itself, or the test suite,
-  never from workflow event data. In a workflow `run:` step it reaches the
-  script through the environment, a `GITHUB_*` default variable or an
-  `env:` mapping, never as a `${{ }}` expression pasted into the script.
+  the developer's `make` line, the Makefile itself, a workflow's own
+  literal `run:` line, or the test suite, never from workflow event data.
+  In a workflow `run:` step it reaches the script through the
+  environment, a `GITHUB_*` default variable or an `env:` mapping, never
+  as a `${{ }}` expression pasted into the script.
   Give it a hostile-value test, like the metacharacter-tag case in
   `tests/unit/release.bats`, added in PR #4 after Copilot's review found
   the `$(TAG)` expansion in the Makefile's `release-check` recipe.
@@ -993,14 +997,17 @@ fix (the diff command below compares commits, so an uncommitted fix is
 invisible to the reviewer; `git status --porcelain` must print nothing) and
 run `git fetch origin`: the command names `origin/main`, the fetched base,
 because a fetch never moves the local `main`, and a merge base taken from a
-stale local branch would put already-merged commits into the review. The
-only additions allowed are the branch base named in the diff command, if it
-is not `origin/main`, and a one-line header naming the repository path and
-branch. Two things the prompt's "do not change any file" does not forbid:
-`tmp/verify-links.sh` and the cache it writes under `tmp/` are gitignored
-scratch, so a reviewer in a fresh clone recreates the script from "Markdown
-style" and says so; and its three release-URL failures before a version is
-tagged are the expected ones "Releases" describes, not findings.
+stale local branch would put already-merged commits into the review. Only
+the one substitution allowed (the branch base named in the diff command,
+if it is not `origin/main`) and the one addition (a one-line header
+naming the repository path and branch) may differ from that verbatim
+text. Two things the prompt's "do not change any file" does not forbid:
+`tmp/linkcache` is gitignored scratch that running the checker writes,
+and clearing it (`rm -rf tmp/linkcache`) forces a refetch; and the
+release-URL failures are expected, per "Releases": before a version is
+tagged and its release is published all three fail, and after the tag
+push only `latest/download` still fails, until the release workflow
+finishes.
 
 ```text
 You are reviewing the diff `git diff origin/main...HEAD` of this
@@ -1009,8 +1016,9 @@ AGENTS.md from the checkout first, then read every changed file whole,
 not just the diff hunks. This is a read-only review: run the linter and
 the offline test suite; run `make test-live` when the diff touches any
 function AGENTS.md's Testing section names for it; when the diff touches
-markdown, run the markdownlint command from `.forgejo/workflows/ci.yml`
-and `tmp/verify-links.sh`; and do not change any file.
+markdown, run the markdownlint job's two steps from
+`.forgejo/workflows/ci.yml`, the config write and then the `npx` line,
+and `make links`; and do not change any file.
 
 Your job is to find what is wrong, not to confirm that the change works.
 Security comes first, but it is not the whole job: treat every value that
@@ -1031,7 +1039,10 @@ sentence in prose or a comment that the code or an upstream source
 contradicts. Find them, or say plainly why you could not.
 
 For each finding, give the file and line, what is wrong, why it matters
-to an operator, and the concrete fix. Say explicitly what checks out
+to an operator, and the concrete fix. Label it "substantive" (it changes
+what runs, what an operator would paste, or what a sentence claims about
+the code or an upstream source) or "prose" (wording only), so the author
+can tell whether another round is owed. Say explicitly what checks out
 clean, and list anything you could not verify.
 
 End with a verdict: mergeable as is, mergeable after the listed fixes, or
@@ -1060,17 +1071,16 @@ anything yourself.
 - Cite with inline links, `[text](url)`, where the link text is the words
   of the claim.
 - A URL that has to stand alone goes in angle brackets.
-- **Every URL is checked by fetching it.** `tmp/verify-links.sh` (gitignored,
-  recreate it from the description here if it is gone) extracts every
-  `https://` URL from `README.md`, `docs/*.md`, `AGENTS.md`, `CHANGELOG.md`
-  and the script, requires HTTP 200, requires a `#fragment` to match an element
-  id on the page, requires a `#Lnn` fragment on a pinned source link to
-  exist and to contain the phrase the fact quotes, and checks CVE ids
-  through MITRE's API because
-  cve.org itself answers 200 for any id. Run it after any change that adds
-  or moves a link. Source links are pinned to the commits named in the
-  Facts preamble; when a fact is re-verified against a newer commit, move
-  the pin and the line numbers together.
+- **Every URL is checked by fetching it.** `make links` runs
+  `tests/verify-links.sh`, which extracts every `https://` URL from
+  `README.md`, `docs/*.md`, `AGENTS.md`, `CHANGELOG.md` and the script,
+  requires HTTP 200, requires a `#fragment` to match an element id on the
+  page, requires a `#Lnn` fragment on a pinned source link to exist and to
+  contain the phrase the fact quotes, and checks CVE ids through MITRE's
+  API because cve.org itself answers 200 for any id. Run it after any
+  change that adds or moves a link. Source links are pinned to the
+  commits named in the Facts preamble; when a fact is re-verified against
+  a newer commit, move the pin and the line numbers together.
 
 ## Releases
 
@@ -1098,8 +1108,8 @@ anything yourself.
   anything to point at yet. The first two point at the tag itself and
   clear as soon as the tag is pushed; the third points at `latest`, which
   needs a published release, not just a tag, so it clears only once the
-  release workflow has finished. Run `tmp/verify-links.sh` after the
-  release workflow finishes, not merely after the tag is pushed.
+  release workflow has finished. Run `make links` after the release
+  workflow finishes, not merely after the tag is pushed.
 
 ## Documentation
 
@@ -1112,5 +1122,5 @@ in the same change as the behavior they describe. A relative link between
 `README.md`, `docs/*.md`, `AGENTS.md`, `CLAUDE.md` and `CHANGELOG.md` (a
 path, with or without a `#anchor`) is checked by `tests/unit/docs.bats`,
 which fails if the target file or heading does not exist; a `https://` URL
-in any of them is checked separately, by `tmp/verify-links.sh` (see
+in any of them is checked separately, by `tests/verify-links.sh` (see
 "Markdown style", above).

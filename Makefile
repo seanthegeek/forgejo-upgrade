@@ -5,6 +5,7 @@
 #   make lint            shellcheck over the script, the helpers and every stub
 #   make test            the offline suite
 #   make test-live       the suite that talks to the release API and a keyserver
+#   make links           check every https:// URL in the docs and script (network)
 #   make coverage        line coverage of the offline suite
 #   make coverage-all    line coverage of both suites, merged
 #   make release-check   verify TAG, SCRIPT_VERSION and CHANGELOG.md agree
@@ -27,14 +28,14 @@ SCRIPT_VERSION := $(shell sed -n 's/^SCRIPT_VERSION=//p' $(SCRIPT))
 # $(wildcard) rather than a bare glob so a target still runs when one of these
 # directories is empty: an unmatched glob would be handed to shellcheck as a
 # literal path and fail as a missing file.
-SHELL_SOURCES := $(SCRIPT) tests/helpers.bash \
+SHELL_SOURCES := $(SCRIPT) tests/helpers.bash tests/verify-links.sh \
                  $(wildcard tests/unit/*.bats) \
                  $(wildcard tests/live/*.bats) \
                  $(wildcard tests/fixtures/bin/*) \
                  $(wildcard tests/fixtures/nounits/*) \
                  $(wildcard tests/fixtures/curl/*/curl)
 
-.PHONY: all lint test test-live coverage coverage-all report clean \
+.PHONY: all lint test test-live links coverage coverage-all report clean \
         release-check release-notes
 
 all: lint test
@@ -47,6 +48,12 @@ test:
 
 test-live:
 	$(BATS) tests/live
+
+# Fetches every https:// URL cited in README.md, docs/*.md, AGENTS.md,
+# CHANGELOG.md and the script; see tests/verify-links.sh's own header for
+# what each check does. Needs outbound network access.
+links:
+	./tests/verify-links.sh
 
 # kcov follows the child bash processes the harness starts, so the lines that
 # run inside `in_script` are attributed to the sourced script. --include-path

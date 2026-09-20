@@ -25,12 +25,16 @@ split:
 3. **Review with Fable** (fall back to Opus only if Fable is unavailable).
    After implementation, all work must be reviewed by Fable before it is
    considered done. The review uses the prompt in AGENTS.md's "The
-   fresh-context review prompt" verbatim, apart from the two additions
-   AGENTS.md allows (the branch base and a one-line header naming the
-   repository path and branch), and runs again after every round of
-   fixes, on the final diff, including `make test-live` when the diff
-   touches any function AGENTS.md's Testing section names for it, until a
-   pass comes back with nothing required.
+   fresh-context review prompt" verbatim, apart from the one substitution
+   allowed (the branch base, if it is not `origin/main`) and the one
+   addition (a one-line header naming the repository path and branch),
+   and runs again after every round of fixes, on the final diff,
+   including `make test-live` when the diff touches any function
+   AGENTS.md's Testing section names for it, until a pass finds nothing
+   beyond minor prose (wording, a stale line number, a comment) — a
+   finding that changes what runs, what an operator would paste, or what
+   a sentence claims about the code or an upstream source gets another
+   round.
 
 **PR reviews** must also use Fable, with Opus as the fallback if Fable is
 unavailable.
