@@ -609,9 +609,9 @@ work without it, and CI measures coverage.
 `make test-live` is the verification path: it downloads
 [a real release](https://code.forgejo.org/forgejo/runner/releases), checks its
 signature and checksum, and proves a tampered copy is rejected. Both suites
-run in CI on every push. See `AGENTS.md` for how the suite is laid out, the
-conventions, and the facts about Forgejo's release artifacts that the script
-depends on.
+run in CI on every pull request and on every push to `main`. See `AGENTS.md`
+for how the suite is laid out, the conventions, and the facts about Forgejo's
+release artifacts that the script depends on.
 
 ## License
 

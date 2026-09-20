@@ -60,15 +60,17 @@ coverage-all:
 
 # Prints the covered percentage kcov recorded for the script: from
 # kcov-merged/coverage.json after a merge, else from the single run's own
-# coverage.json. kcov's idea of an executable line in bash is a heuristic, so
-# this is a trend, not a truth. kcov creates its output directory but not the
-# parent, hence the mkdir above.
+# coverage.json. A JSON with no readable percent_covered fails the target
+# rather than printing a blank number and passing CI. kcov's idea of an
+# executable line in bash is a heuristic, so this is a trend, not a truth.
+# kcov creates its output directory but not the parent, hence the mkdir above.
 report:
 	@f="$(REPORT_DIR)/kcov-merged/coverage.json"; \
 	  [ -f "$$f" ] || f=$$(find "$(REPORT_DIR)" -name coverage.json | head -n 1); \
 	  [ -n "$$f" ] || { echo "no coverage.json under $(REPORT_DIR)" >&2; exit 1; }; \
-	  sed -n 's/.*"percent_covered"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9.]*\)"\{0,1\}.*/\1/p' "$$f" \
-	  | head -n 1 | sed 's|^|$(SCRIPT) line coverage: |; s|$$|%|'
+	  pct=$$(sed -n 's/.*"percent_covered"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9.]*\)"\{0,1\}.*/\1/p' "$$f" | head -n 1); \
+	  [ -n "$$pct" ] || { echo "no percent_covered in $$f; the kcov output format may have changed" >&2; exit 1; }; \
+	  echo "$(SCRIPT) line coverage: $$pct%"
 
 clean:
 	rm -rf coverage

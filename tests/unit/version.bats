@@ -2,8 +2,9 @@
 # parse_forgejo_version, parse_runner_version, installed_forgejo and
 # installed_runner. Guards the AGENTS.md "Facts about Forgejo release
 # artifacts" bullets that the server binary prints a lowercase
-# "forgejo version 16.0.5+gitea-..." even though the docs and some write-ups
-# show it capitalized, and that the runner prints "forgejo-runner version
+# "forgejo version 16.0.5+gitea-..." even though third-party write-ups show it
+# capitalized (the docs page on obtaining the version shows no string at
+# all), and that the runner prints "forgejo-runner version
 # v13.1.0" with a "v" the version number itself does not have; and the Shell
 # style rule that "$FORGEJO_BIN --version 2>&1" is output capture, not
 # suppression, so a failing or unparseable binary's own output ends up in the
@@ -26,7 +27,7 @@ setup() { load ../helpers; common_setup; }
   assert_equal "16.0.5" "$output"
 }
 
-@test "parse_forgejo_version accepts the capitalized form the docs show" {
+@test "parse_forgejo_version accepts the capitalized form write-ups show" {
   run --separate-stderr in_script 'parse_forgejo_version "$1"' \
     'Forgejo version 16.0.5+gitea-1.22.0 (release name 16.0.5)'
   assert_status 0
