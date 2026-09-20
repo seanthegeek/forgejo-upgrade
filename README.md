@@ -32,8 +32,10 @@ curl -qfsSLO https://github.com/seanthegeek/forgejo-upgrade/releases/latest/down
 ```
 
 `-f` makes `curl` fail on an HTTP error instead of saving the error page as
-the script, `-q` keeps a `~/.curlrc` out of it, `-S` still prints the error
-that `-s` would otherwise hide, and `&&` installs only what was downloaded.
+the script, `-L` follows GitHub's redirect from `latest/download` to the
+release asset (without it `-f` sees only the redirect and saves an empty
+file), `-q` keeps a `~/.curlrc` out of it, `-S` still prints the error that
+`-s` would otherwise hide, and `&&` installs only what was downloaded.
 
 The script upgrades an existing install; it refuses to run when the binary it is
 asked to upgrade is missing. Run `forgejo-upgrade version` at any time to see
