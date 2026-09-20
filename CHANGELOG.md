@@ -17,9 +17,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   optional so a host can run either, both, or neither.
 - Verification before anything is installed: the downloaded binary's GPG
   signature is checked against the pinned Forgejo release key (tolerating
-  the release's rotating signing subkey) and its sha256 checksum, a
-  tampered file is refused, and a missing key is refreshed from the
-  keyserver and retried once before giving up.
+  the release's rotating signing subkey), its sha256 checksum is checked
+  when the release publishes one (a release without a `.sha256` file is
+  accepted on the signature alone, with a warning), a tampered file is
+  refused, and a missing key is refreshed from the keyserver and retried
+  once before giving up.
 - A backup (`forgejo dump`) taken after the service is stopped and before
   the binary is replaced, skippable with `SKIP_BACKUP` for hosts that back
   up some other way.

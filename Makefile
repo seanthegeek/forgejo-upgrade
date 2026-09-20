@@ -87,12 +87,17 @@ clean:
 # if the tag, the script, and the changelog disagree. Every check names what
 # it expected and what it found; `TAG` has no default, since a mistyped or
 # forgotten TAG must stop the release rather than silently check v0.0.0.
+# TAG is read from the environment as "$${TAG}", never expanded as $(TAG)
+# into the recipe text: make substitutes $(TAG) before the shell sees the
+# line, so a tag such as v";id;# would run as a command. A variable given on
+# make's command line is exported to the recipe's environment, which is how
+# the release workflows pass it.
 release-check:
-	@test -n "$(TAG)" || { \
+	@test -n "$${TAG:-}" || { \
 	  echo "release-check: TAG is not set; run as, e.g., make release-check TAG=v$(SCRIPT_VERSION)" >&2; \
 	  exit 1; }
-	@test "$(TAG)" = "v$(SCRIPT_VERSION)" || { \
-	  echo "release-check: TAG=$(TAG) does not match v$(SCRIPT_VERSION) (SCRIPT_VERSION in $(SCRIPT))" >&2; \
+	@test "$${TAG}" = "v$(SCRIPT_VERSION)" || { \
+	  echo "release-check: TAG=$${TAG} does not match v$(SCRIPT_VERSION) (SCRIPT_VERSION in $(SCRIPT))" >&2; \
 	  exit 1; }
 	@got=$$(./$(SCRIPT) version) && [ "$$got" = "forgejo-upgrade $(SCRIPT_VERSION)" ] || { \
 	  echo "release-check: '$(SCRIPT) version' printed '$$got', want 'forgejo-upgrade $(SCRIPT_VERSION)'" >&2; \
@@ -115,7 +120,7 @@ release-check:
 	  [ -n "$$got" ] && [ "$$got" = "$$d" ] || { \
 	    echo "release-check: $(CHANGELOG)'s date '$$d' is not a valid calendar date" >&2; \
 	    exit 1; }
-	@echo "release-check: TAG=$(TAG) matches SCRIPT_VERSION=$(SCRIPT_VERSION) and $(CHANGELOG)'s first released section"
+	@echo "release-check: TAG=$${TAG} matches SCRIPT_VERSION=$(SCRIPT_VERSION) and $(CHANGELOG)'s first released section"
 
 # The release workflows' notes step: the body of the current version's own
 # CHANGELOG.md section, trimmed of the blank lines Keep a Changelog leaves

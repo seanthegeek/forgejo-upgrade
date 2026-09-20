@@ -28,9 +28,12 @@ Fetch the latest release and copy it to each host that runs Forgejo or the
 runner:
 
 ```bash
-curl -LO https://github.com/seanthegeek/forgejo-upgrade/releases/latest/download/forgejo-upgrade.sh
-sudo install -m 755 forgejo-upgrade.sh /usr/local/sbin/forgejo-upgrade
+curl -qfsSLO https://github.com/seanthegeek/forgejo-upgrade/releases/latest/download/forgejo-upgrade.sh && sudo install -m 755 forgejo-upgrade.sh /usr/local/sbin/forgejo-upgrade
 ```
+
+`-f` makes `curl` fail on an HTTP error instead of saving the error page as
+the script, `-q` keeps a `~/.curlrc` out of it, and `&&` installs only what
+was downloaded.
 
 The script upgrades an existing install; it refuses to run when the binary it is
 asked to upgrade is missing. Run `forgejo-upgrade version` at any time to see

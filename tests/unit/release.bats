@@ -109,6 +109,24 @@ setup() {
   assert_stderr_contains "TAG=v9.9.9 does not match v$VERSION"
 }
 
+@test "make release-check treats a tag with shell metacharacters as text, not as a command" {
+  # A tag name is whatever was pushed. The recipe reads TAG from the
+  # environment as "${TAG}" rather than expanding $(TAG) into the recipe
+  # text, because make would substitute the latter before the shell saw it
+  # and v";touch pwned;# would run as a command in a workflow that can write
+  # to the repository. The mismatch message quotes the tag verbatim and no
+  # file is created.
+  local marker=$BATS_TEST_TMPDIR/pwned
+  run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check "TAG=$2"' \
+    _ "$ROOT" "v$VERSION\";touch $marker;#"
+  assert_status 2
+  assert_stderr_contains "release-check: TAG=v$VERSION\";touch $marker;# does not match v$VERSION"
+  if [[ -e $marker ]]; then
+    printf 'the tag was executed as a command: %s exists\n' "$marker" >&2
+    return 1
+  fi
+}
+
 @test "make release-check fails with a clear message when TAG is unset" {
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check' \
     _ "$ROOT"

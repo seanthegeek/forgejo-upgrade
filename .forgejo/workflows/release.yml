@@ -83,9 +83,10 @@ jobs:
         # upload-artifact action in ci.yml, which do).
         # There is no sha256sum input on this action - checked against its
         # README and action.yml today - so that part of the original plan
-        # is dropped rather than invented; forgejo-upgrade.sh's own GPG
-        # signature and sha256 check already cover what a published
-        # checksum here would duplicate for an installer.
+        # is dropped rather than invented. A checksum of this release asset
+        # would be a feature of its own (the script's GPG and sha256 checks
+        # verify the Forgejo binaries it downloads, not itself), and neither
+        # forge publishes one for it today.
         # `token` is left at the action's own default, forge.token, which is
         # this workflow's automatic token. If this Forgejo instance's
         # automatic token cannot create releases, add a RELEASE_TOKEN secret
