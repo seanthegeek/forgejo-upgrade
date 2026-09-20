@@ -885,8 +885,14 @@ anything is stopped — is the `fj-space` case in `settings.bats`.
 - `db_type.bats` — `FORGEJO_DB_TYPE` and `db_is_external`/`backup_note`/
   `restore_hint`.
 - `docs.bats` — every relative link in `README.md`, `docs/*.md`,
-  `AGENTS.md` and `CLAUDE.md` resolves to a real file and, if it has one,
-  a real anchor; the checker itself fails on a synthetic broken link.
+  `AGENTS.md`, `CLAUDE.md` and `CHANGELOG.md` resolves to a real file and,
+  if it has one, a real anchor; the checker itself fails on a synthetic
+  broken link.
+- `release.bats` — `SCRIPT_VERSION`'s shape, that `version`/`--version`
+  print it and nothing else, that the header names the subcommand, that
+  `CHANGELOG.md`'s first two sections are `[Unreleased]` and the current
+  version with a link reference each, and both `make release-check` and
+  `make release-notes`, passing and failing.
 
 `tests/live/`
 
@@ -925,7 +931,9 @@ Patterns that self-review reliably misses.
   range that prints it; the subcommand `case` and the command table in
   `README.md`; the settings tables in `docs/configuration.md` and the
   two `resolve_*_settings` functions; the header's override list and the
-  tables in `docs/configuration.md`.
+  tables in `docs/configuration.md`; `SCRIPT_VERSION`, the first released
+  section of `CHANGELOG.md`, and the tag `release-check` verifies them
+  against.
 - **An ad hoc check that matches nothing is broken, not green.** A `grep -q`
   aimed at the wrong string produces a passing-looking result. Make one-off
   checks fail loudly on zero matches.
@@ -965,8 +973,8 @@ Patterns that self-review reliably misses.
 - A URL that has to stand alone goes in angle brackets.
 - **Every URL is checked by fetching it.** `tmp/verify-links.sh` (gitignored,
   recreate it from the description here if it is gone) extracts every
-  `https://` URL from `README.md`, `docs/*.md`, `AGENTS.md` and the
-  script, requires HTTP 200, requires a `#fragment` to match an element
+  `https://` URL from `README.md`, `docs/*.md`, `AGENTS.md`, `CHANGELOG.md`
+  and the script, requires HTTP 200, requires a `#fragment` to match an element
   id on the page, requires a `#Lnn` fragment on a pinned source link to
   exist and to contain the phrase the fact quotes, and checks CVE ids
   through MITRE's API because
@@ -975,12 +983,26 @@ Patterns that self-review reliably misses.
   Facts preamble; when a fact is re-verified against a newer commit, move
   the pin and the line numbers together.
 
-## GitHub releases
+## Releases
 
-- Releases are made by version tag, not branch.
-- Tags are prefixed with `v`. Release titles exclude the prefix.
-- Attach `forgejo-upgrade.sh` to the release so it can be fetched with one
-  `curl`.
+- Releases are made by version tag, not branch. Tags are prefixed with `v`;
+  release titles exclude the prefix.
+- The process: bump `SCRIPT_VERSION` in `forgejo-upgrade.sh`; move the
+  `Unreleased` bullets in `CHANGELOG.md` under a new
+  `## [x.y.z] - YYYY-MM-DD` heading and add its link reference at the
+  bottom; merge; tag `vX.Y.Z` on `main` and push the tag. Pushing that tag
+  needs the author's explicit push permission, per Conventions, the same
+  as pushing a commit to `main`.
+- Pushing the tag triggers the release workflows
+  (`.github/workflows/release.yml`, `.forgejo/workflows/release.yml`),
+  which verify that the tag, `SCRIPT_VERSION`, and CHANGELOG.md's first
+  released section all agree, lint and run the offline test suite, then
+  publish the release with `forgejo-upgrade.sh` attached, that section's
+  body as the release notes, and the tag without its `v` as the title.
+- The `[x.y.z]` link at the bottom of `CHANGELOG.md` points at a release
+  tag that does not exist until the tag is pushed, so it answers 404 until
+  then. Run `tmp/verify-links.sh` after the tag is pushed, not before;
+  that one 404 in between is expected.
 
 ## Documentation
 
@@ -990,8 +1012,8 @@ project. Each page under `docs/` — `how-it-works.md`, `configuration.md`,
 `hardening.md` — covers exactly one topic an operator reads start to
 finish, linked from the README's "Documentation" index. Update the docs
 in the same change as the behavior they describe. A relative link between
-`README.md`, `docs/*.md`, `AGENTS.md` and `CLAUDE.md` (a path, with or
-without a `#anchor`) is checked by `tests/unit/docs.bats`, which fails if the
-target file or heading does not exist; a `https://` URL in any of them is
-checked separately, by `tmp/verify-links.sh` (see "Markdown style",
-above).
+`README.md`, `docs/*.md`, `AGENTS.md`, `CLAUDE.md` and `CHANGELOG.md` (a
+path, with or without a `#anchor`) is checked by `tests/unit/docs.bats`,
+which fails if the target file or heading does not exist; a `https://` URL
+in any of them is checked separately, by `tmp/verify-links.sh` (see
+"Markdown style", above).
