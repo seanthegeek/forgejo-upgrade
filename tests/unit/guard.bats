@@ -59,7 +59,7 @@ setup() { load ../helpers; common_setup; }
 @test "no command runs when the script is sourced" {
   # The dispatch is reached with the arguments of the *sourcing* shell, so a
   # guard that did not return would run `check` here and hit the network.
-  run --separate-stderr bash -c 'source "$0" check' "$SCRIPT"
+  run --separate-stderr bash "$(snippet_file 'source "$0" check')"
   assert_status 0
   assert_equal "" "$output"
   assert_equal "" "$stderr"

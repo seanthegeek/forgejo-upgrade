@@ -666,9 +666,9 @@ and
 
 There is no Forgejo install on the development machine, so the suite is
 split into an offline half and a live half. `tests/helpers.bash` documents
-the helper API (`in_script`, `stub_path`, `fake_bin`, `source_lines`,
-`skip_unless`, the `assert_*` functions) in its own comments; read it before
-writing a new test.
+the helper API (`in_script`, `snippet_file`, `stub_path`, `fake_bin`,
+`source_lines`, `skip_unless`, the `assert_*` functions) in its own comments;
+read it before writing a new test.
 
 ### How to run
 

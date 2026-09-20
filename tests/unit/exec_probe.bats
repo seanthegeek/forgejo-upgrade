@@ -45,7 +45,7 @@ need_userns() {
 
 @test "a noexec working directory fails the exec probe, naming noexec and TMPDIR" {
   need_userns
-  run --separate-stderr unshare -Urm bash -c '
+  run --separate-stderr unshare -Urm bash "$(snippet_file '
     set -e
     export LC_ALL=C
     mount --bind "$1" "$1"
@@ -54,7 +54,7 @@ need_userns() {
     source "$0"
     require_exec_workdir
     printf "PROBE-PASSED\n"
-  ' "$SCRIPT" "$NOEXEC"
+  ')" "$NOEXEC"
   assert_status 1
   refute_stderr_contains "PROBE-PASSED"
   assert_stderr_contains "cannot run a program from $NOEXEC/forgejo-upgrade."
@@ -69,7 +69,7 @@ need_userns() {
   # operator waited for a 20 MB download only to be told the file cannot be
   # run, with the real reason - the mount options - never named.
   need_userns
-  run --separate-stderr unshare -Urm bash -c '
+  run --separate-stderr unshare -Urm bash "$(snippet_file '
     set -e
     export LC_ALL=C
     mount --bind "$1" "$1"
@@ -78,7 +78,7 @@ need_userns() {
     export PATH=$2:$PATH
     source "$0"
     fetch_and_verify "$RUNNER_REPO" forgejo-runner-13.1.0-linux-amd64 13.1.0
-  ' "$SCRIPT" "$NOEXEC" "$FIXTURES/curl/tripwire"
+  ')" "$NOEXEC" "$FIXTURES/curl/tripwire"
   assert_status 1
   assert_stderr_contains "cannot run a program from"
   assert_stderr_contains "mounted noexec"
@@ -99,7 +99,7 @@ need_userns() {
   # which is the point: it got that far. GNUPGHOME is a throwaway directory so
   # that gpg does not touch the developer's own keyring.
   need_userns
-  run --separate-stderr unshare -Urm bash -c '
+  run --separate-stderr unshare -Urm bash "$(snippet_file '
     set -e
     export LC_ALL=C
     export TMPDIR=$1
@@ -107,7 +107,7 @@ need_userns() {
     export GNUPGHOME=$1/gnupg
     source "$0"
     fetch_and_verify "$RUNNER_REPO" forgejo-runner-13.1.0-linux-amd64 13.1.0
-  ' "$SCRIPT" "$NOEXEC" "$FIXTURES/curl/tripwire"
+  ')" "$NOEXEC" "$FIXTURES/curl/tripwire"
   refute_stderr_contains "cannot run a program from"
   assert_stderr_contains "Downloading forgejo-runner-13.1.0-linux-amd64"
   assert_stderr_contains "Verifying GPG signature"

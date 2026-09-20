@@ -35,15 +35,41 @@ common_setup() {
 
 # --- calling into the script --------------------------------------------------
 
+# Write a snippet to a file that runs as if it were the script itself, and
+# print the file's path. BASH_ARGV0 (bash 5.0 and later) makes $0 the script's
+# own path inside the file, so rollback_command's %q "$0" and the usage text's
+# `sed -n '2,36p' "$0"` see the real path, and `source "$0"` in the snippet
+# loads the script. The snippet is run from a file rather than handed to
+# `bash -c` for kcov's sake: kcov traces bash through a PS4 that expands
+# ${BASH_SOURCE}, and once the script's `set -u` is in force a command at the
+# top level of a -c string has no BASH_SOURCE and aborts with "unbound
+# variable"; a file always has one. The file lands under the per-test
+# directory, or the per-file one from setup_file, so bats removes it.
+snippet_file() {  # $1 = bash text; it sources the script itself when it needs it
+  local f
+  f=$(mktemp "${BATS_TEST_TMPDIR:-${BATS_FILE_TMPDIR:-${TMPDIR:-/tmp}}}/snippet.XXXXXX") || return 1
+  printf 'BASH_ARGV0=%q\n%s\n' "$SCRIPT" "$1" > "$f"
+  printf '%s\n' "$f"
+}
+
 # Run a bash snippet in a fresh shell that has sourced the script. $0 inside
-# the snippet is the script's own path, so rollback_command's %q "$0" and the
-# usage text's `sed -n '2,36p' "$0"` see the real path; any extra arguments are
-# $1, $2 ... inside the snippet. The script's own `set -euo pipefail` is in
-# force, as it is for the real thing. Use it with bats' run, and with
-# --separate-stderr because the script's contract is that returned values go to
-# stdout and log/warn/die go to stderr:
+# the snippet is the script's own path (see snippet_file); any extra arguments
+# are $1, $2 ... inside the snippet. The script's own `set -euo pipefail` is
+# in force, as it is for the real thing. Use it with bats' run, and with
+# --separate-stderr because the script's contract is that returned values go
+# to stdout and log/warn/die go to stderr:
 #   FORGEJO_BIN=/x run --separate-stderr in_script 'parse_runner_version "$1"' "$v"
-in_script() { bash -c 'source "$0"; '"$1" "$SCRIPT" "${@:2}"; }
+# A snippet that has to do something before the script is sourced (set
+# TMPDIR, say) uses snippet_file directly and puts its own `source "$0"`
+# where it belongs.
+in_script() {
+  local f
+  # The single quotes are the point: `source "$0"` must reach the child shell
+  # unexpanded, where $0 is the script's path.
+  # shellcheck disable=SC2016
+  f=$(snippet_file 'source "$0"; '"$1") || return 1
+  bash "$f" "${@:2}"
+}
 
 # --- fixtures and stubs --------------------------------------------------------
 

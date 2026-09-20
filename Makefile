@@ -46,22 +46,29 @@ test-live:
 # JSON with sed: no jq, for the same reason the script itself has none.
 coverage:
 	rm -rf coverage/unit
+	mkdir -p coverage/unit
 	$(KCOV) --include-path=$(CURDIR)/$(SCRIPT) coverage/unit $(BATS) tests/unit
 	@$(MAKE) --no-print-directory report REPORT_DIR=coverage/unit
 
 coverage-all:
 	rm -rf coverage/unit coverage/live coverage/all
+	mkdir -p coverage/unit coverage/live coverage/all
 	$(KCOV) --include-path=$(CURDIR)/$(SCRIPT) coverage/unit $(BATS) tests/unit
 	$(KCOV) --include-path=$(CURDIR)/$(SCRIPT) coverage/live $(BATS) tests/live
 	$(KCOV) --merge coverage/all coverage/unit coverage/live
 	@$(MAKE) --no-print-directory report REPORT_DIR=coverage/all
 
-# Prints the covered percentage kcov recorded for the script. kcov's idea of an
-# executable line in bash is a heuristic, so this is a trend, not a truth.
+# Prints the covered percentage kcov recorded for the script: from
+# kcov-merged/coverage.json after a merge, else from the single run's own
+# coverage.json. kcov's idea of an executable line in bash is a heuristic, so
+# this is a trend, not a truth. kcov creates its output directory but not the
+# parent, hence the mkdir above.
 report:
-	@sed -n 's/.*"percent_covered"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9.]*\)"\{0,1\}.*/\1/p' \
-	  "$(REPORT_DIR)/kcov-merged/coverage.json" | head -n 1 \
-	  | sed 's|^|$(SCRIPT) line coverage: |; s|$$|%|'
+	@f="$(REPORT_DIR)/kcov-merged/coverage.json"; \
+	  [ -f "$$f" ] || f=$$(find "$(REPORT_DIR)" -name coverage.json | head -n 1); \
+	  [ -n "$$f" ] || { echo "no coverage.json under $(REPORT_DIR)" >&2; exit 1; }; \
+	  sed -n 's/.*"percent_covered"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9.]*\)"\{0,1\}.*/\1/p' "$$f" \
+	  | head -n 1 | sed 's|^|$(SCRIPT) line coverage: |; s|$$|%|'
 
 clean:
 	rm -rf coverage

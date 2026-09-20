@@ -65,10 +65,10 @@ setup() {
     acquire_lock
     printf "first-pid=%s\n" "$$"
     set +e
-    bash -c "source \"\$0\"; LOCK_DIR=\$1; acquire_lock; echo SECOND-ACQUIRED" "$0" "$1"
+    bash "$2" "$1"
     printf "second-rc=%s\n" "$?"
     [[ -d $LOCK_DIR ]] && echo still-held
-  ' "$LOCK"
+  ' "$LOCK" "$(snippet_file 'source "$0"; LOCK_DIR=$1; acquire_lock; echo SECOND-ACQUIRED')"
   assert_status 0
 
   local pid=${output#*first-pid=}
@@ -91,9 +91,9 @@ setup() {
     acquire_lock
     printf 999999 > "$LOCK_DIR/pid"
     set +e
-    bash -c "source \"\$0\"; LOCK_DIR=\$1; acquire_lock; echo SECOND-ACQUIRED" "$0" "$1"
+    bash "$2" "$1"
     printf "second-rc=%s\n" "$?"
-  ' "$LOCK"
+  ' "$LOCK" "$(snippet_file 'source "$0"; LOCK_DIR=$1; acquire_lock; echo SECOND-ACQUIRED')"
   assert_status 0
   assert_output_contains "second-rc=1"
   refute_stderr_contains "SECOND-ACQUIRED"

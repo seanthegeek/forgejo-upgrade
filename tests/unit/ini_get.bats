@@ -79,8 +79,8 @@ setup() { load ../helpers; common_setup; }
 @test "the two-key cycle terminates instead of hanging" {
   # timeout 20 is the proof that matters here: a hang would be a test that
   # never finishes rather than one that fails fast.
-  run --separate-stderr timeout 20 bash -c \
-    'source "$0"; ini_get "$1" server CYCLE1' "$SCRIPT" "$FIXTURES/ini/interp.ini"
+  run --separate-stderr timeout 20 \
+    bash "$(snippet_file 'source "$0"; ini_get "$1" server CYCLE1')" "$FIXTURES/ini/interp.ini"
   assert_status 0
   assert_output_contains "%("
 }
