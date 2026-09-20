@@ -86,13 +86,16 @@ setup() {
 }
 
 @test "a lock left by a process that is gone says so and gives the rm -r remedy" {
-  # 999999 is written with no final newline on purpose: `read` then returns
+  # The pid is written with no final newline on purpose: `read` then returns
   # non-zero although it has filled the value in, and the script must still
   # report that pid rather than fall through to "no pid recorded".
   run --separate-stderr in_script '
     LOCK_DIR=$1
     acquire_lock
-    printf 999999 > "$LOCK_DIR/pid"
+    # 4194305 is one above the largest pid_max Linux allows (2^22, per
+    # proc(5)), so no process can ever have it; a smaller number such as
+    # 999999 would be a real pid on a host whose pid_max was raised.
+    printf 4194305 > "$LOCK_DIR/pid"
     set +e
     bash "$2" "$1"
     printf "second-rc=%s\n" "$?"
@@ -100,7 +103,7 @@ setup() {
   assert_status 0
   assert_output_contains "second-rc=1"
   refute_output_contains "SECOND-ACQUIRED"
-  assert_stderr_contains "pid 999999, no longer running"
+  assert_stderr_contains "pid 4194305, no longer running"
   assert_stderr_contains "remove the stale lock with: rm -r $LOCK"
 }
 
@@ -135,7 +138,10 @@ setup() {
   # and the write went through there. The lock is owned from the moment the
   # directory exists, so on_exit has to remove it or every later run stops at
   # a lock nobody holds.
+  # LC_ALL=C because "Is a directory" is bash's redirection diagnostic, which
+  # comes from strerror and is translated under another locale.
   run --separate-stderr in_script '
+    export LC_ALL=C
     LOCK_DIR=$1
     mkdir() { command mkdir "$@" && command mkdir "$1/pid"; }
     acquire_lock
