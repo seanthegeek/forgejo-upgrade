@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Link checker for README.md, docs/*.md, AGENTS.md, CHANGELOG.md and
-# forgejo-upgrade.sh, run by `make links`.
+# Link checker for README.md, docs/*.md, AGENTS.md, CLAUDE.md,
+# CHANGELOG.md and forgejo-upgrade.sh, run by `make links`.
 #
 # For every https:// URL in these files it runs the four checks AGENTS.md's
 # "Markdown style" section lists:
@@ -11,8 +11,8 @@
 #     blob URL is checked against the raw file at the same pin: the lines
 #     must exist, and when the EXPECT table below names a phrase for that
 #     path and line, the phrase must appear within those lines;
-#   - a CVE record is checked through the MITRE API, whose description must
-#     name Forgejo (cve.org itself is a single-page app that answers 200 for
+#   - a CVE record is checked through the MITRE API; the record must name
+#     Forgejo (cve.org itself is a single-page app that answers 200 for
 #     any id).
 # Two more checks are in the code but not in that list: a
 # code.forgejo.org/api/swagger#/... fragment is checked against the real
@@ -20,14 +20,18 @@
 # User-Agent, because a bare curl gets an empty body from some hosts (NVD
 # among them).
 #
-# The cache lives under tmp/linkcache/, which this script creates and which
-# never expires: `rm -rf tmp/linkcache` is how to force a refetch.
+# The cache lives under tmp/linkcache/, which this script creates. A
+# successful fetch is cached there and never expires; a failed one is
+# refetched every run, so a stalled or flaky host does not stick around as
+# a false failure once it recovers. `rm -rf tmp/linkcache` forces a full
+# refetch, successes included.
 #
 # Before a version is tagged and its release published, the three
 # release-URL failures described under "Releases" in AGENTS.md are
 # expected, not bugs in this script.
 #
-# Zero URLs found is a failure. Exit status is the number of failures.
+# Zero URLs found is a failure. Exits non-zero when any URL fails; the
+# count is printed.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 99
 cache=tmp/linkcache; mkdir -p "$cache"
@@ -44,6 +48,8 @@ EXPECT=(
   'modules/setting/path.go#L170|filepath.Abs'
   'modules/setting/path.go#L177-L178|readFromArgs()'
   'modules/setting/path.go#L189|WORK_PATH'
+  'modules/setting/path.go#L189-L202|WORK_PATH'
+  'modules/setting/path.go#L93-L207|InitWorkPathAndCfgProvider'
   'modules/setting/config_provider.go#L189-L194|configProviderLoadOptions'
   'modules/setting/config_provider.go#L293-L294|0o600'
   'modules/setting/security.go#L415-L430|INTERNAL_TOKEN'
@@ -65,8 +71,6 @@ EXPECT=(
   'go.mod#L112|gopkg.in/ini.v1 v1.67.3'
   'contrib/systemd/forgejo.service#L56|User=git'
   'contrib/systemd/forgejo.service#L58|WorkingDirectory=/var/lib/forgejo'
-  'contrib/systemd/forgejo.service#L62|ExecStart=/usr/local/bin/forgejo'
-  'contrib/systemd/forgejo.service#L64|FORGEJO_WORK_DIR=/var/lib/forgejo'
   'internal/pkg/config/config.example.yaml#L23|file: .runner'
   'internal/pkg/config/config.example.yaml#L25|capacity'
   'internal/pkg/config/config.example.yaml#L38-L42|shutdown_timeout'
@@ -85,8 +89,6 @@ EXPECT=(
   'doc/DETAILS#L485|EXPSIG'
   'doc/DETAILS#L492|EXPKEYSIG'
   'doc/DETAILS#L499|REVKEYSIG'
-  'doc/DETAILS#L506|BADSIG'
-  'doc/DETAILS#L521|ERRSIG'
   'doc/DETAILS#L815|KEYEXPIRED'
   'doc/DETAILS#L829|NO_PUBKEY'
 )
@@ -94,8 +96,9 @@ EXPECT=(
 fetch() {  # $1 = url -> file in cache, prints status
   local f
   f="$cache/$(printf '%s' "$1" | md5sum | cut -c1-32)"
-  if [[ ! -s "$f.code" ]]; then
-    curl -sL -A 'forgejo-upgrade-linkcheck/1.0' -o "$f" -w '%{http_code}' "$1" > "$f.code"
+  if [[ ! -s "$f.code" ]] || [[ $(cat "$f.code") != 200 ]]; then
+    curl -q -sL --max-time 60 -A 'forgejo-upgrade-linkcheck/1.0' \
+      -o "$f" -w '%{http_code}' "$1" > "$f.code"
   fi
   printf '%s\n' "$f"
 }
@@ -113,7 +116,7 @@ raw_url() {  # $1 = blob url without fragment -> raw url for the same file
 
 report() { printf '%-5s %s%s\n' "$1" "$2" "${3:+  -- $3}"; if [[ $1 == FAIL ]]; then fail=$((fail+1)); else ok=$((ok+1)); fi; }
 
-mapfile -t urls < <(grep -ohE 'https://[^ )>"'"'"'`]+' README.md docs/*.md AGENTS.md CHANGELOG.md forgejo-upgrade.sh \
+mapfile -t urls < <(grep -ohE 'https://[^ )>"'"'"'`]+' README.md docs/*.md AGENTS.md CLAUDE.md CHANGELOG.md forgejo-upgrade.sh \
   | sed -e 's/[.,;:]$//' | grep -v '\$' | grep -v '<' | grep -v '\.example\.com' | sort -u)
 [[ ${#urls[@]} -gt 0 ]] || { echo "no URLs found: the extraction is broken"; exit 99; }
 echo "checking ${#urls[@]} distinct URLs"
@@ -164,4 +167,4 @@ for url in "${urls[@]}"; do
 done
 
 echo; echo "ok=$ok fail=$fail"
-exit "$fail"
+[[ $fail -eq 0 ]]

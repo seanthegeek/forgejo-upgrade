@@ -50,8 +50,8 @@ test-live:
 	$(BATS) tests/live
 
 # Fetches every https:// URL cited in README.md, docs/*.md, AGENTS.md,
-# CHANGELOG.md and the script; see tests/verify-links.sh's own header for
-# what each check does. Needs outbound network access.
+# CLAUDE.md, CHANGELOG.md and the script; see tests/verify-links.sh's own
+# header for what each check does. Needs outbound network access.
 links:
 	./tests/verify-links.sh
 

@@ -562,9 +562,9 @@ and
 - **Forgejo refuses a relative work path from every source.** Per
   `modules/setting/path.go`, `InitWorkPathAndCfgProvider`, current
   `forgejo` branch, a relative
-  [`FORGEJO_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L124)
+  [`FORGEJO_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L132)
   or
-  [`GITEA_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L132)
+  [`GITEA_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L124)
   in the environment hits
   `log.Fatal("FORGEJO_WORK_DIR (work path) must be absolute path")`, a
   relative `--work-path` hits
@@ -700,6 +700,8 @@ dependencies," above, which is unchanged.
 - `make test` — the offline suite, `tests/unit/`. No network.
 - `make test-live` — the suite that talks to the release API and a
   keyserver, `tests/live/`.
+- `make links` — fetches every `https://` URL cited in the docs and the
+  script and checks it; needs outbound network access.
 - `make coverage` / `make coverage-all` — kcov line coverage of the offline
   suite alone, or of both suites merged.
 - `bats tests/unit/lock.bats` — run one file.
@@ -952,11 +954,13 @@ Patterns that self-review reliably misses.
   specific the author wants checked goes in the PR description for the
   human reviewer, or is checked by the author directly. The review runs
   on the final diff and runs again, fresh, after every round of fixes,
-  until a pass finds nothing beyond minor prose (wording, a stale line
-  number, a comment); those are fixed without another round. A finding
-  that changes what runs, what an operator would paste, or what a
-  sentence claims about the code or an upstream source gets another
-  round. A Copilot round with zero findings on the final commit,
+  until a pass finds nothing beyond wording (a rewrap, a sentence that
+  says the same true thing less well); those are fixed without another
+  round. A finding that changes what runs, what an operator would paste,
+  or what a sentence claims about the code or an upstream source gets
+  another round, and a sentence that is wrong is in that second group
+  however small the edit, because an operator acts on these documents.
+  A Copilot round with zero findings on the final commit,
   suppressed comments included, is part of "done."
   [Copilot code review reads AGENTS.md and CLAUDE.md
   too](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review#customizing-copilots-reviews-with-custom-instructions),
@@ -970,9 +974,10 @@ Patterns that self-review reliably misses.
   recipe text: `TAG` is the one value a forge supplies, and it is the one
   read that way; every `$(VAR)` the recipes expand today (`BATS`, `KCOV`,
   `SHELLCHECK`, `REPORT_DIR`, `CHANGELOG`, and the Makefile's own
-  `SCRIPT`, `SCRIPT_VERSION`, `CURDIR`, `MAKE`, `SHELL_SOURCES`) is set by
-  the developer's `make` line, the Makefile itself, a workflow's own
-  literal `run:` line, or the test suite, never from workflow event data.
+  `SCRIPT`, `CURDIR`, `MAKE`, `SHELL_SOURCES`, plus `SCRIPT_VERSION`,
+  read from the script) is set by the developer's `make` line, the
+  Makefile itself, a workflow's own literal `run:` line, or the test
+  suite, never from workflow event data.
   In a workflow `run:` step it reaches the script through the
   environment, a `GITHUB_*` default variable or an `env:` mapping, never
   as a `${{ }}` expression pasted into the script.
@@ -1002,9 +1007,11 @@ the one substitution allowed (the branch base named in the diff command,
 if it is not `origin/main`) and the one addition (a one-line header
 naming the repository path and branch) may differ from that verbatim
 text. Two things the prompt's "do not change any file" does not forbid:
-`tmp/linkcache` is gitignored scratch that running the checker writes,
-and clearing it (`rm -rf tmp/linkcache`) forces a refetch; and the
-release-URL failures are expected, per "Releases": before a version is
+`tmp/linkcache` is gitignored scratch that running the checker writes —
+a successful fetch is cached there and never expires, while a failed one
+is refetched on every run — and clearing it (`rm -rf tmp/linkcache`)
+forces a full refetch; and the release-URL failures are expected, per
+"Releases": before a version is
 tagged and its release is published all three fail, and after the tag
 push only `latest/download` still fails, until the release workflow
 finishes.
@@ -1041,9 +1048,11 @@ contradicts. Find them, or say plainly why you could not.
 For each finding, give the file and line, what is wrong, why it matters
 to an operator, and the concrete fix. Label it "substantive" (it changes
 what runs, what an operator would paste, or what a sentence claims about
-the code or an upstream source) or "prose" (wording only), so the author
-can tell whether another round is owed. Say explicitly what checks out
-clean, and list anything you could not verify.
+the code or an upstream source; a sentence that is wrong is substantive
+however small the fix) or "wording" (the text stays true and only reads
+better), so the author can tell whether another round is owed. Say
+explicitly what checks out clean, and list anything you could not
+verify.
 
 End with a verdict: mergeable as is, mergeable after the listed fixes, or
 not mergeable, with the fixes in the order to apply them. Do not fix
@@ -1073,14 +1082,15 @@ anything yourself.
 - A URL that has to stand alone goes in angle brackets.
 - **Every URL is checked by fetching it.** `make links` runs
   `tests/verify-links.sh`, which extracts every `https://` URL from
-  `README.md`, `docs/*.md`, `AGENTS.md`, `CHANGELOG.md` and the script,
-  requires HTTP 200, requires a `#fragment` to match an element id on the
-  page, requires a `#Lnn` fragment on a pinned source link to exist and to
-  contain the phrase the fact quotes, and checks CVE ids through MITRE's
-  API because cve.org itself answers 200 for any id. Run it after any
-  change that adds or moves a link. Source links are pinned to the
-  commits named in the Facts preamble; when a fact is re-verified against
-  a newer commit, move the pin and the line numbers together.
+  `README.md`, `docs/*.md`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md` and
+  the script, requires HTTP 200, requires a `#fragment` to match an
+  element id on the page, requires a `#Lnn` fragment on a pinned source
+  link to exist and, where the EXPECT table registers a phrase for it, to
+  contain that phrase, and checks CVE ids through MITRE's API because
+  cve.org itself answers 200 for any id. Run it after any change that
+  adds or moves a link. Source links are pinned to the commits named in
+  the Facts preamble; when a fact is re-verified against a newer commit,
+  move the pin and the line numbers together.
 
 ## Releases
 

@@ -31,10 +31,10 @@ split:
    and runs again after every round of fixes, on the final diff,
    including `make test-live` when the diff touches any function
    AGENTS.md's Testing section names for it, until a pass finds nothing
-   beyond minor prose (wording, a stale line number, a comment) — a
+   beyond wording (the text stays true and only reads better) — a
    finding that changes what runs, what an operator would paste, or what
-   a sentence claims about the code or an upstream source gets another
-   round.
+   a sentence claims about the code or an upstream source, including any
+   sentence that is wrong, gets another round.
 
 **PR reviews** must also use Fable, with Opus as the fallback if Fable is
 unavailable.
