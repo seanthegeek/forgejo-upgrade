@@ -70,12 +70,18 @@ setup() {
 }
 
 @test "every ## [x] heading in CHANGELOG.md has a matching link reference" {
-  local heading name bad=""
+  local heading name bad="" headings
+  headings=$(grep -E '^## \[' "$CHANGELOG")
+  # An ad hoc check that matches nothing is broken, not green (AGENTS.md,
+  # Review discipline): if the heading grep itself found nothing, the loop
+  # below would exit 0 having asserted nothing at all.
+  [[ -n $headings ]] \
+    || { echo "no '## [' headings found in $CHANGELOG" >&2; return 1; }
   while IFS= read -r heading; do
     name=$(sed -E 's/^## \[([^]]+)\].*/\1/' <<<"$heading")
     grep -qE "^\[$(sed 's/[.[\*^$/]/\\&/g' <<<"$name")\]: " "$CHANGELOG" \
       || bad+="no link reference for [$name]"$'\n'
-  done < <(grep -E '^## \[' "$CHANGELOG")
+  done <<<"$headings"
   if [[ -n $bad ]]; then
     printf '%s' "$bad" >&2
     return 1
@@ -96,6 +102,9 @@ setup() {
   run --separate-stderr bash -c \
     'cd "$1" && make --no-print-directory release-check TAG=v9.9.9' \
     _ "$ROOT"
+  # GNU make exits 2 on any error in a recipe, per its manual's "Summary of
+  # Options" - not merely "non-zero" - which is why 2 is asserted here and
+  # at every other release-check/release-notes failure below.
   assert_status 2
   assert_stderr_contains "TAG=v9.9.9 does not match v$VERSION"
 }
@@ -120,13 +129,39 @@ setup() {
   assert_stderr_contains "$doctored's first released section is '## [Released]"
 }
 
-@test "make release-notes prints a non-empty body with no ## heading line" {
+@test "make release-check fails when the Unreleased section still has bullets" {
+  local doctored=$BATS_TEST_TMPDIR/CHANGELOG.md
+  awk '/^## \[Unreleased\]/ { print; print ""; print "- not yet released"; next } \
+       { print }' "$CHANGELOG" > "$doctored"
+  run --separate-stderr bash -c \
+    'cd "$1" && make --no-print-directory release-check TAG="v$2" CHANGELOG="$3"' \
+    _ "$ROOT" "$VERSION" "$doctored"
+  assert_status 2
+  assert_stderr_contains "[Unreleased] section still has content"
+}
+
+@test "make release-check fails on an invalid calendar date" {
+  local doctored=$BATS_TEST_TMPDIR/CHANGELOG.md
+  sed "s/^## \[$VERSION\] - [0-9-]*\$/## [$VERSION] - 2026-99-99/" \
+    "$CHANGELOG" > "$doctored"
+  run --separate-stderr bash -c \
+    'cd "$1" && make --no-print-directory release-check TAG="v$2" CHANGELOG="$3"' \
+    _ "$ROOT" "$VERSION" "$doctored"
+  assert_status 2
+  assert_stderr_contains "date '2026-99-99' is not a valid calendar date"
+}
+
+@test "make release-notes prints a non-empty body with no ## heading or link line" {
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-notes' \
     _ "$ROOT"
   assert_status 0
   [[ -n $output ]] || { echo "release-notes printed nothing" >&2; return 1; }
   if grep -qE '^## ' <<<"$output"; then
     printf 'release-notes output still contains a "## " heading line:\n%s\n' "$output" >&2
+    return 1
+  fi
+  if grep -qE '^\[[^]]+\]: ' <<<"$output"; then
+    printf 'release-notes output still contains a link reference line:\n%s\n' "$output" >&2
     return 1
   fi
 }

@@ -20,8 +20,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the release's rotating signing subkey) and its sha256 checksum, a
   tampered file is refused, and a missing key is refreshed from the
   keyserver and retried once before giving up.
-- A backup (`forgejo dump`) taken before the service is stopped, skippable
-  with `SKIP_BACKUP` for hosts that back up some other way.
+- A backup (`forgejo dump`) taken after the service is stopped and before
+  the binary is replaced, skippable with `SKIP_BACKUP` for hosts that back
+  up some other way.
+- A warning, read from `app.ini`'s `[database]` section before anything is
+  stopped, when the database is not SQLite: `forgejo dump`'s zip holds an
+  SQL copy that is not a safe restore, so a major-version upgrade's
+  confirmation prompt is worded to require a native dump (`pg_dump`,
+  `mysqldump`) taken first.
 - The previous binary kept as `.prev`, with its file capabilities, ACL, and
   other extended attributes preserved, so `rollback` can restore it.
 - `rollback`, which refuses to auto-start after a major-version upgrade
@@ -33,8 +39,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `check` and `settings`, read-only commands that show installed versus
   latest versions and every setting an upgrade would use, each read from
   the systemd unit and `app.ini` rather than assumed.
-- A lock file so only one `forgejo`, `runner`, or `rollback` run happens
-  at a time on a host.
+- A lock so only one `forgejo`, `runner`, or `rollback` run happens at a
+  time on a host.
 - A recovery message on any exit that leaves the service stopped: the
   journal output plus the exact `systemctl start` or `rollback` command
   to run next, with the run's own overrides and `sudo` prefix carried

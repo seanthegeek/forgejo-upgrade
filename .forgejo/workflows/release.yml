@@ -38,14 +38,16 @@ jobs:
 
       - name: Install the test tools
         # shellcheck comes from trixie-backports; see ci.yml for why trixie
-        # itself is one version behind what this repo lints with.
+        # itself is one version behind what this repo lints with. acl and
+        # attr provide setfacl/setfattr for the install_binary tests, so
+        # those cases run here instead of silently skipping.
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           echo 'deb http://deb.debian.org/debian trixie-backports main' \
             > /etc/apt/sources.list.d/backports.list
           apt-get update
-          apt-get install -y --no-install-recommends bats make
+          apt-get install -y --no-install-recommends bats make acl attr
           apt-get install -y --no-install-recommends -t trixie-backports shellcheck
 
       - name: Lint the shell
@@ -77,7 +79,8 @@ jobs:
       - name: Publish the release
         # Pinned to the exact tag v2.13.4, not a floating v2: this action
         # publishes no major-version tag at all (checked against its tags
-        # API today, unlike checkout and upload-artifact above, which do).
+        # API today, unlike the checkout action above and the
+        # upload-artifact action in ci.yml, which do).
         # There is no sha256sum input on this action - checked against its
         # README and action.yml today - so that part of the original plan
         # is dropped rather than invented; forgejo-upgrade.sh's own GPG

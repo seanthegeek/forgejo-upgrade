@@ -83,9 +83,9 @@ report:
 clean:
 	rm -rf coverage
 
-# The release workflows' first step: fail before anything is published if the
-# tag, the script, and the changelog disagree. Every check names what it
-# expected and what it found; `TAG` has no default, since a mistyped or
+# The release workflows' check step, run before anything is published: fail
+# if the tag, the script, and the changelog disagree. Every check names what
+# it expected and what it found; `TAG` has no default, since a mistyped or
 # forgotten TAG must stop the release rather than silently check v0.0.0.
 release-check:
 	@test -n "$(TAG)" || { \
@@ -97,15 +97,27 @@ release-check:
 	@got=$$(./$(SCRIPT) version) && [ "$$got" = "forgejo-upgrade $(SCRIPT_VERSION)" ] || { \
 	  echo "release-check: '$(SCRIPT) version' printed '$$got', want 'forgejo-upgrade $(SCRIPT_VERSION)'" >&2; \
 	  exit 1; }
+	@body=$$(awk '/^## \[Unreleased\]/ { seen = 1; next } \
+	                  seen && /^## \[/ { exit } \
+	                  seen { print }' $(CHANGELOG)); \
+	  if echo "$$body" | grep -qE '[^[:space:]]'; then \
+	    echo "release-check: $(CHANGELOG)'s [Unreleased] section still has content; move its bullets under the new version section first" >&2; \
+	    exit 1; \
+	  fi
 	@heading=$$(awk '/^## \[Unreleased\]/ { seen = 1; next } \
 	                  seen && /^## \[/ { print; exit }' $(CHANGELOG)); \
 	  echo "$$heading" \
 	    | grep -qE '^## \[$(subst .,\.,$(SCRIPT_VERSION))\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$$' || { \
 	    echo "release-check: $(CHANGELOG)'s first released section is '$$heading', want '## [$(SCRIPT_VERSION)] - YYYY-MM-DD'" >&2; \
+	    exit 1; }; \
+	  d=$${heading##*- }; \
+	  got=$$(date -d "$$d" +%F 2>/dev/null); \
+	  [ -n "$$got" ] && [ "$$got" = "$$d" ] || { \
+	    echo "release-check: $(CHANGELOG)'s date '$$d' is not a valid calendar date" >&2; \
 	    exit 1; }
 	@echo "release-check: TAG=$(TAG) matches SCRIPT_VERSION=$(SCRIPT_VERSION) and $(CHANGELOG)'s first released section"
 
-# The release workflows' second step: the body of the current version's own
+# The release workflows' notes step: the body of the current version's own
 # CHANGELOG.md section, trimmed of the blank lines Keep a Changelog leaves
 # around each heading, becomes the release notes handed to gh and
 # forgejo-release. Empty is a hard failure, not a release with no notes. The

@@ -75,7 +75,7 @@ setup() { load ../helpers; common_setup; }
 # --- reading the range out of the script ---------------------------------------
 #
 # Both helpers below take the end of the range from the script's own dispatch
-# line, so the number 36 is written down in one place: the script.
+# line, so the range's end is written down in one place: the script.
 
 usage_range_end() {
   local lineno line

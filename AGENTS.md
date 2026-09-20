@@ -664,7 +664,7 @@ and
   paths. `install`, `sha256sum`, and `mktemp -d` with a template are GNU
   behaviors and that is fine.
 - **The usage text is the script's own header comment**, printed with
-  `sed -n '2,36p'`. Adding a line to the header means updating that range.
+  `sed -n '2,37p'`. Adding a line to the header means updating that range.
 
 ## Testing
 
@@ -724,7 +724,7 @@ cleanup. The guard detects sourcing by whether `return` outside a function
 succeeds, not by comparing `$0`, because the test suite deliberately sets
 `$0` to the script's own path. That is on purpose: inside `in_script`, `$0`
 has to be the real path so that `rollback_command`'s `%q "$0"` and the
-usage text's `sed -n '2,36p' "$0"` see it rather than bash's own.
+usage text's `sed -n '2,37p' "$0"` see it rather than bash's own.
 
 Two facts about that child bash are worth recording. kcov traces a bash
 program through a `PS4` that expands `${BASH_SOURCE}`, and a command at the
@@ -995,14 +995,22 @@ Patterns that self-review reliably misses.
   as pushing a commit to `main`.
 - Pushing the tag triggers the release workflows
   (`.github/workflows/release.yml`, `.forgejo/workflows/release.yml`),
-  which verify that the tag, `SCRIPT_VERSION`, and CHANGELOG.md's first
-  released section all agree, lint and run the offline test suite, then
-  publish the release with `forgejo-upgrade.sh` attached, that section's
-  body as the release notes, and the tag without its `v` as the title.
-- The `[x.y.z]` link at the bottom of `CHANGELOG.md` points at a release
-  tag that does not exist until the tag is pushed, so it answers 404 until
-  then. Run `tmp/verify-links.sh` after the tag is pushed, not before;
-  that one 404 in between is expected.
+  which lint and run the offline test suite, then verify that the tag,
+  `SCRIPT_VERSION`, and CHANGELOG.md's first released section all agree
+  (`make release-check`), then publish the release with
+  `forgejo-upgrade.sh` attached, that section's body as the release notes
+  (`make release-notes`), and the tag without its `v` as the title. A tag
+  that is not `v<SCRIPT_VERSION>` (a `v0.1.0-rc1`, say) still fires the
+  workflows, but fails at the `release-check` step by design, and nothing
+  is published.
+- Between merge and the tag push, the `[x.y.z]` and `[Unreleased]` links
+  at the bottom of `CHANGELOG.md` and the README's
+  `releases/latest/download` link all answer 404, since none of them has
+  anything to point at yet. The first two point at the tag itself and
+  clear as soon as the tag is pushed; the third points at `latest`, which
+  needs a published release, not just a tag, so it clears only once the
+  release workflow has finished. Run `tmp/verify-links.sh` after the
+  release workflow finishes, not merely after the tag is pushed.
 
 ## Documentation
 

@@ -30,11 +30,14 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install the test tools
+        # acl and attr provide setfacl/setfattr for the install_binary
+        # tests, so those cases run here instead of silently skipping.
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bats shellcheck
+          sudo apt-get install -y --no-install-recommends \
+            bats shellcheck acl attr
 
       - name: Lint the shell
         run: make lint
