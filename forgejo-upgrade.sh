@@ -1965,6 +1965,12 @@ check() {
 
 # --- main --------------------------------------------------------------------
 
+# When this file is sourced rather than run (the test suite does this), stop
+# here: every definition above is loaded and the command dispatch below is
+# skipped. `return` outside a function is only valid in a sourced file, which
+# is exactly the case being detected.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then return 0; fi
+
 case "${1:-}" in
   check)    check ;;
   settings) settings ;;
