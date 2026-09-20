@@ -678,6 +678,9 @@ Install the dev-only tools once, on Debian or Ubuntu:
 sudo apt install bats kcov attr acl shellcheck
 ```
 
+Ubuntu 24.04 has no `kcov` package — it is in 22.04 and again from 25.04
+on — so leave `kcov` out of that line there and let CI measure coverage.
+
 This is separate from the script's own dependency list under "No new
 dependencies," above, which is unchanged.
 
@@ -710,6 +713,17 @@ succeeds, not by comparing `$0`, because the test suite deliberately sets
 has to be the real path so that `rollback_command`'s `%q "$0"` and the
 usage text's `sed -n '2,36p' "$0"` see it rather than bash's own.
 
+Two facts about that child bash are worth recording. kcov traces a bash
+program through a `PS4` that expands `${BASH_SOURCE}`, and a command at the
+top level of a `bash -c` string has no `BASH_SOURCE`: once the script's
+`set -u` is in force such a snippet dies with an unbound-variable error, so
+a bare `bash -c` that sources the script passes under plain bats and fails
+under `make coverage`. That is why every snippet is written to a file by
+`snippet_file` and run from there. `snippet_file` also sets `$0` through
+`BASH_ARGV0`, which needs bash 5.0 or later; CI has 5.2 on trixie and 5.3
+on Ubuntu 26.04, so an older bash is the one thing that would break the
+harness rather than a test.
+
 ### Unit versus live
 
 `tests/unit/` is offline: stub `systemctl`, `curl`, and `journalctl`
@@ -726,22 +740,30 @@ one sentence per file:
 - `fetch_and_verify.bats` — a real runner release downloads, verifies, and
   is reported as the version it says it is; one appended byte to a
   verified copy is rejected with the verdict `bad-signature`.
-- `fetch_sha256.bats` — a real 404 is reported as "not published," and a
-  host that does not resolve stops the run with the transport-error
-  message.
+- `fetch_sha256.bats` — a real 404 makes `fetch_sha256` return 1 silently,
+  leaving no error page behind; the "not published" wording an operator
+  reads belongs to its caller, `fetch_and_verify`, and is checked
+  structurally where it is written. A host that does not resolve stops the
+  run with the transport-error message.
 - `key_refresh.bats` — an empty keyring is rescued by refreshing exactly
   the pinned key, and an unreachable keyserver stops the run with the
   "could not refresh the key" message — `fetch_and_verify`'s own wording,
   not `die_bad_signature`'s.
 - `latest_tag.bats` — the release API's `tag_name` reads correctly for
-  both repos, and `check` still exits 0 when it has to ask it.
+  both repos, and `check` really asks it: on a host whose units systemd
+  does not know, a `FORGEJO_BIN` the operator names makes Forgejo present,
+  and the table comes back with that binary's version and a live `N.N.N`
+  in the latest column, while the unnamed runner stays "not installed"
+  with a dash and no call made for it.
 - `healthz_curlrc.bats` — `-q` defeats a `.curlrc` saying `location`
-  against a real redirecting server.
+  against a real redirecting server. The source audit of the same fact
+  needs no network and lives in `tests/unit/healthz.bats`.
 
 The `unshare`-based noexec test in `exec_probe.bats` skips where user
 namespaces are unavailable, such as under Docker's default seccomp
-profile. The xattr case in `install_binary.bats` skips without `setfattr`
-or `python3`.
+profile. In `install_binary.bats` the ACL case skips without `setfacl` and
+`getfacl`, and the extended-attribute case skips without `setfattr` or
+`python3`.
 
 ### What cannot run anywhere
 
@@ -760,10 +782,44 @@ set before the `mv` that consumes `.prev`; `dump.bats` checks that the
 dump archive's 0600 pre-creation sits between the stop and the
 `dump --file` call.
 
+Some bullets in "Facts about Forgejo release artifacts" have no test at
+all, because they describe what Forgejo, its runner, or systemd does
+rather than what this script does, or because seeing them needs a running
+install. They are listed here so the gap is a decision on the record and
+not mistaken for coverage:
+
+- **`latest` is across release lines**, and the major-version confirmation
+  it forces: the prompt lives inside `upgrade_forgejo`, which never runs
+  here.
+- **Forgejo and the runner are versioned independently**: the script never
+  compares the two, so there is nothing to assert.
+- **`TimeoutStopSec=infinity` and `runner.shutdown_timeout`**: systemd and
+  the runner do that waiting, not the script.
+- **No read-only Forgejo command loads `app.ini` without a side effect**
+  (`doctor check --run paths` writes `INTERNAL_TOKEN` and creates
+  directories): it is the reason the pre-stop checks prove only what they
+  prove, and confirming it needs a real install.
+- **The runner's registration survives a binary swap**: what the script
+  does about it — resolve `RUNNER_REG_FILE` and say so when the file is
+  missing — is covered in `settings.bats`; that the daemon still accepts
+  the registration afterwards is upstream's behaviour.
+- **An older Forgejo binary refuses to start on a migrated database**:
+  `rollback_needs_manual_start` and the wording around it are tested; the
+  `log.Fatal` itself is Forgejo's.
+- **`forgejo dump`'s zip is not a safe database restore for PostgreSQL or
+  MySQL**: the messages that follow from it are tested in `db_type.bats`
+  and `on_exit.bats`; the upstream bug is not ours to reproduce.
+
+The lossy `argv[]` is not on that list: the script's own answer to it —
+reading a `-c` path back truncated at the space and refusing it before
+anything is stopped — is the `fj-space` case in `settings.bats`.
+
 ### Rules for new work
 
 - Every bullet in "Facts about Forgejo release artifacts" has a test that
-  names it, in its `@test` sentence or its file's header comment.
+  names it, in its `@test` sentence or its file's header comment, unless it
+  is on the exemption list in "What cannot run anywhere," above. Adding a
+  bullet to that list is a decision to write down, not a way out of a test.
 - When a fact moves or changes, its test changes in the same commit.
 - A new failure message gets its exact wording asserted, not just its
   presence.
@@ -795,7 +851,9 @@ dump archive's 0600 pre-creation sits between the stop and the
   matrix, including the two-key cycle and the `&` case.
 - `yaml_get.bats` — `runner.file` and neighboring keys from a fixture
   runner config.
-- `settings.bats` — the whole resolver matrix for both components.
+- `settings.bats` — the whole resolver matrix for both components,
+  including the two stock units' blocks asserted line for line, the
+  `http+unix` socket, and the `-c` path that `argv[]` truncates.
 - `check.bats` — `check` with nothing installed: "not installed," no API
   call, exit 0.
 - `install_binary.bats` — attribute, ACL, and mode preservation, and every

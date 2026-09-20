@@ -76,7 +76,10 @@ setup() {
 
   assert_output_contains "second-rc=1"
   assert_output_contains "still-held"
-  refute_stderr_contains "SECOND-ACQUIRED"
+  # The sentinel the second run would echo goes to stdout, so stdout is where
+  # it has to be refuted: refuting it on stderr passes whether or not the
+  # second acquire went through.
+  refute_output_contains "SECOND-ACQUIRED"
   assert_stderr_contains "another forgejo-upgrade run holds the lock $LOCK"
   assert_stderr_contains "pid $pid, still running"
   assert_stderr_contains "Two runs at once could overwrite the .prev copy that a rollback needs"
@@ -96,7 +99,7 @@ setup() {
   ' "$LOCK" "$(snippet_file 'source "$0"; LOCK_DIR=$1; acquire_lock; echo SECOND-ACQUIRED')"
   assert_status 0
   assert_output_contains "second-rc=1"
-  refute_stderr_contains "SECOND-ACQUIRED"
+  refute_output_contains "SECOND-ACQUIRED"
   assert_stderr_contains "pid 999999, no longer running"
   assert_stderr_contains "remove the stale lock with: rm -r $LOCK"
 }
@@ -105,7 +108,7 @@ setup() {
   mkdir -p "$LOCK"
   run --separate-stderr in_script 'LOCK_DIR=$1; acquire_lock; echo ACQUIRED' "$LOCK"
   assert_status 1
-  refute_stderr_contains "ACQUIRED"
+  refute_output_contains "ACQUIRED"
   assert_stderr_contains "another forgejo-upgrade run holds the lock $LOCK"
   assert_stderr_contains "no pid recorded"
   # The run that lost must not take the winner's lock away with it.
@@ -139,7 +142,7 @@ setup() {
     printf 'expected a non-zero exit after the failed pid write, got 0\n' >&2
     return 1
   fi
-  refute_stderr_contains "UNEXPECTED-RETURNED"
+  refute_output_contains "UNEXPECTED-RETURNED"
   assert_stderr_contains "Permission denied"
   if [[ -d $LOCK ]]; then
     printf 'the lock directory %s was left behind after the pid write failed\n' "$LOCK" >&2

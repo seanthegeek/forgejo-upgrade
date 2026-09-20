@@ -79,8 +79,12 @@ _first_function_after() {
 
 @test "rollback sets BINARY_REPLACED=2 before the mv that consumes .prev" {
   local replaced mv
-  replaced=$(source_lines 'BINARY_REPLACED=2')
+  replaced=$(source_lines '^  BINARY_REPLACED=2$')
   mv=$(source_lines 'mv -fT "\$bin\.prev" "\$bin"')
+  # One assignment and one rename, so the comparison below is between two
+  # line numbers and not between two lists of them.
+  assert_equal "1" "$(printf '%s\n' "$replaced" | wc -l)"
+  assert_equal "1" "$(printf '%s\n' "$mv" | wc -l)"
   [[ $replaced -lt $mv ]] \
     || { printf 'BINARY_REPLACED=2 (line %s) does not come before the mv (line %s)\n' "$replaced" "$mv" >&2; return 1; }
 }

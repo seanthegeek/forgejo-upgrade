@@ -56,7 +56,9 @@ need_userns() {
     printf "PROBE-PASSED\n"
   ')" "$NOEXEC"
   assert_status 1
-  refute_stderr_contains "PROBE-PASSED"
+  # The snippet echoes the sentinel, so it would land on stdout; refuting it
+  # on stderr would pass even if the probe had let the run through.
+  refute_output_contains "PROBE-PASSED"
   assert_stderr_contains "cannot run a program from $NOEXEC/forgejo-upgrade."
   assert_stderr_contains "The filesystem holding it is most likely mounted noexec"
   assert_stderr_contains "Set TMPDIR to a directory on a filesystem that allows execution"
@@ -83,12 +85,11 @@ need_userns() {
   assert_stderr_contains "cannot run a program from"
   assert_stderr_contains "mounted noexec"
   # Nothing was fetched and nothing was even announced as being fetched.
+  # The tripwire echoes on stdout, but the script calls curl inside a command
+  # substitution in places, so both streams are refuted.
+  refute_output_contains "CURL-WAS-CALLED"
   refute_stderr_contains "CURL-WAS-CALLED"
   refute_stderr_contains "Downloading"
-  if [[ $output == *"CURL-WAS-CALLED"* ]]; then
-    printf 'the tripwire curl was reached before the exec probe:\n%s\n' "$output" >&2
-    return 1
-  fi
 }
 
 @test "the same download in an ordinary working directory gets past the probe to the download" {

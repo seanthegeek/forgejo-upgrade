@@ -57,3 +57,33 @@ setup() { load ../helpers; common_setup; }
   refute_stderr_contains "WARN:"
   refute_stderr_contains "ERROR:"
 }
+
+@test "check asks the release API for a component that is installed, and exits 0" {
+  # The two tests above call latest_tag directly, and the one below runs check
+  # on a host where nothing is installed and nothing is asked. This is the
+  # case in between, and the only one that proves `check` itself reaches the
+  # API: the nounits systemctl knows no unit, so naming FORGEJO_BIN is what
+  # says Forgejo is here (AGENTS.md, "Neither component is assumed present":
+  # the operator setting the binary variable counts as present). The runner is
+  # left unnamed, so it stays absent and its releases are not fetched.
+  stub_path "$FIXTURES/nounits"
+  local bin=$BATS_TEST_TMPDIR/forgejo
+  fake_bin "$bin" 'forgejo version 16.0.5+gitea-1.22.0 (release name 16.0.5)'
+  FORGEJO_BIN=$bin run --separate-stderr "$SCRIPT" check
+  assert_status 0
+  assert_output_contains "component        installed    latest"
+  local row
+  row=$(printf '%s\n' "$output" | grep '^forgejo  ')
+  echo "# $row" >&3
+  # The installed column is what the fake binary printed, parsed; the latest
+  # column is whatever the API answered today, so only its shape can be
+  # asserted - a bare N.N.N, never the dash an absent component gets.
+  if [[ ! $row =~ ^forgejo[[:space:]]+16\.0\.5[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$ ]]; then
+    printf 'expected "forgejo 16.0.5 <N.N.N>" in the table, got: %s\n' "$row" >&2
+    return 1
+  fi
+  assert_output_contains "forgejo-runner   not installed -"
+  # --quiet is passed to both resolvers, so an installed component is reported
+  # in the table and nowhere else.
+  assert_equal "" "$stderr"
+}

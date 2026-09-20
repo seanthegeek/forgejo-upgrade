@@ -21,8 +21,9 @@ bats_require_minimum_version 1.5.0
 setup() {
   load ../helpers
   common_setup
-  # journalctl only: PATH is otherwise untouched, so the real systemctl is
-  # never reached (on_exit prints commands, it does not run them).
+  # The fixture stubs: journalctl, which on_exit really runs, and the stub
+  # systemctl beside it, which nothing here reaches because on_exit prints
+  # the systemctl commands rather than running them.
   stub_path "$FIXTURES/bin"
   BIN=$BATS_TEST_TMPDIR/opt/forgejo
   mkdir -p "${BIN%/*}"
@@ -188,24 +189,6 @@ replaced_1() {
   fi
   if [[ -e $workdir ]]; then
     printf 'the working directory %s outlived the run; on_exit did not remove it\n' "$workdir" >&2
-    return 1
-  fi
-}
-
-@test "rollback marks the binary as rolled back before it renames it, not after" {
-  # Structural, because rollback is never run on this machine. bash runs the
-  # INT and TERM traps between commands, so a Ctrl-C landing after the rename
-  # and before the assignment would have on_exit describe a binary it thinks
-  # was untouched.
-  local start mark rename
-  start=$(source_lines '^rollback\(\) \{$')
-  mark=$(source_lines '^  BINARY_REPLACED=2$')
-  rename=$(source_lines '^  mv -fT "\$bin\.prev" "\$bin"$')
-  assert_equal "1" "$(printf '%s\n' "$mark" | wc -l)"
-  assert_equal "1" "$(printf '%s\n' "$rename" | wc -l)"
-  if [[ $mark -le $start || $mark -ge $rename ]]; then
-    printf 'expected BINARY_REPLACED=2 (line %s) inside rollback (from line %s) and before the mv (line %s)\n' \
-      "$mark" "$start" "$rename" >&2
     return 1
   fi
 }

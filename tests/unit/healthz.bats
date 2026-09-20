@@ -87,22 +87,35 @@ STUB
     || { printf 'did not expect --unix-socket without FORGEJO_SOCKET: %s\n' "$argv" >&2; return 1; }
 }
 
-@test "every literal curl invocation in the script passes -q first" {
-  local lines n=0 ln text
-  lines=$(source_lines 'curl -q')
-  while read -r ln; do
-    n=$((n + 1))
-    text=$(sed -n "${ln}p" "$SCRIPT")
-    [[ $text == *'curl -q '* ]] \
-      || { printf 'line %s calls curl but not with -q first: %s\n' "$ln" "$text" >&2; return 1; }
-  done <<< "$lines"
-  [[ $n -ge 3 ]] \
-    || { printf 'expected at least 3 curl -q call sites, found %s\n' "$n" >&2; return 1; }
-  # healthz (tested above, with the argv-recording stub) builds its curl call
-  # from an array whose first element is -q, so it never shows up in a
-  # literal "curl -q" grep; this checks that array literal exists, so every
-  # curl call site in the script is covered one way or the other.
-  source_lines 'local -a opts=\(-q ' >/dev/null
+@test "every curl call in the script has -q as its first argument" {
+  # The regex looks for a curl call however it is written - at the start of a
+  # line or inside a $( ) - and not for "curl -q", which would only ever find
+  # the calls that already pass it and would go green on the day someone adds
+  # one that does not.
+  local -a numbers=()
+  mapfile -t numbers < <(source_lines '(^|\$\()[[:space:]]*curl[[:space:]]')
+  if [[ ${#numbers[@]} -eq 0 ]]; then
+    printf 'no curl calls found in %s; this check is broken, not green\n' "$SCRIPT" >&2
+    return 1
+  fi
+  local n line rest checked=0
+  for n in "${numbers[@]}"; do
+    line=$(sed -n "${n}p" "$SCRIPT")
+    rest=${line#*curl }
+    case $rest in
+      '-q '*) checked=$(( checked + 1 )) ;;
+      # healthz builds its options in an array, so -q has to be first in the
+      # array instead; the declaration is checked in its own right.
+      '"${opts[@]}"'*)
+        source_lines 'local -a opts=\(-q ' >/dev/null
+        checked=$(( checked + 1 )) ;;
+      *)
+        printf 'line %s calls curl without -q first, so it would read root/.curlrc: %s\n' \
+          "$n" "$line" >&2
+        return 1 ;;
+    esac
+  done
+  echo "# curl calls audited: $checked (lines ${numbers[*]})" >&3
 }
 
 @test "wait_forgejo_healthy is driven by the clock, not by a count of attempts" {

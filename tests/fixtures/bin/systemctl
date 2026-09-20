@@ -210,6 +210,35 @@ case "${unit%.service}" in
       *)                echo "" ;;
     esac ;;
 
+  # An install that listens on a unix socket, so the health check has to dial
+  # HTTP_ADDR rather than a host and port.
+  fj-unix)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/unix.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- an argv[] that cannot be read back faithfully ---------------------------
+
+  # A -c path with a space in it. systemd prints argv[] with a plain space
+  # between arguments and no quoting, so this comes back as two words and the
+  # script reads the config path truncated at the space. The pre-stop checks
+  # then refuse it, which is the whole point: it is refused rather than
+  # guessed at.
+  fj-space)
+    case $prop in
+      LoadState)        echo loaded ;;
+      ExecStart)        exec_record "$FJ" web -c "$FIXTURES/ini/has space/app.ini" ;;
+      User)             echo git ;;
+      WorkingDirectory) echo /var/lib/forgejo ;;
+      *)                echo "" ;;
+    esac ;;
+
+  # --- units pointed at a particular database ----------------------------------
+
   fj-sqlite)
     case $prop in
       LoadState)        echo loaded ;;

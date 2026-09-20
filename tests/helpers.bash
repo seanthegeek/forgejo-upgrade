@@ -170,6 +170,13 @@ assert_output_contains() {  # $1 = substring that must appear on stdout
   fi
 }
 
+refute_output_contains() {  # $1 = substring that must not appear on stdout
+  if [[ ${output?run has not been called} == *"$1"* ]]; then
+    printf 'expected stdout NOT to contain: %s\n                actual stdout: %s\n' "$1" "$output" >&2
+    return 1
+  fi
+}
+
 assert_stderr_contains() {  # $1 = substring that must appear on stderr
   if [[ ${stderr?run --separate-stderr has not been called} != *"$1"* ]]; then
     printf 'expected stderr to contain: %s\n            actual stderr: %s\n' "$1" "$stderr" >&2

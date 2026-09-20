@@ -602,6 +602,10 @@ make test-live   # tests/live: downloads a real runner release and verifies it
 make coverage    # kcov line coverage of the offline suite
 ```
 
+Ubuntu 24.04 has no `kcov` package — it is in 22.04 and again from 25.04
+on — so leave `kcov` out of that line there; `make lint` and `make test`
+work without it, and CI measures coverage.
+
 `make test-live` is the verification path: it downloads
 [a real release](https://code.forgejo.org/forgejo/runner/releases), checks its
 signature and checksum, and proves a tampered copy is rejected. Both suites

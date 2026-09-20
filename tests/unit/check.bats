@@ -35,11 +35,8 @@ setup() { load ../helpers; common_setup; }
   stub_path "$FIXTURES/curl/tripwire"
   run --separate-stderr "$SCRIPT" check
   assert_status 0
+  refute_output_contains "CURL-WAS-CALLED"
   refute_stderr_contains "CURL-WAS-CALLED"
-  if [[ $output == *CURL-WAS-CALLED* ]]; then
-    printf 'expected stdout not to contain CURL-WAS-CALLED (curl was called):\n%s\n' "$output" >&2
-    return 1
-  fi
 }
 
 @test "check prints the header line and the security-announcements pointer, and nothing else on stderr" {

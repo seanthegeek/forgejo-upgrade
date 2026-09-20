@@ -5,8 +5,9 @@
 # page into that page's 200 and report a stopped Forgejo as healthy. The live
 # half points healthz at http://codeberg.org, which really answers a 302 to
 # https, and proves the same .curlrc does change plain curl's answer, so the
-# test cannot pass by the redirect having gone away. The last test is the
-# source audit of the same fact: every curl call in the script starts with -q.
+# test cannot pass by the redirect having gone away. The source audit of the
+# same fact - every curl call in the script starts with -q - needs no network
+# and lives in tests/unit/healthz.bats.
 # This file needs the network.
 
 # Snippets handed to in_script are single-quoted on purpose: they must reach
@@ -46,31 +47,4 @@ setup() { load ../helpers; common_setup; }
   stub_path "$FIXTURES/curl/200"
   FORGEJO_URL=http://forgejo.invalid run --separate-stderr in_script 'healthz'
   assert_status 0
-}
-
-@test "every curl call in the script has -q as its first argument" {
-  local -a numbers=()
-  mapfile -t numbers < <(source_lines '(^|\$\()[[:space:]]*curl[[:space:]]')
-  if [[ ${#numbers[@]} -eq 0 ]]; then
-    printf 'no curl calls found in %s; this check is broken, not green\n' "$SCRIPT" >&2
-    return 1
-  fi
-  local n line rest checked=0
-  for n in "${numbers[@]}"; do
-    line=$(sed -n "${n}p" "$SCRIPT")
-    rest=${line#*curl }
-    case $rest in
-      '-q '*) checked=$(( checked + 1 )) ;;
-      # healthz builds its options in an array, so -q has to be first in the
-      # array instead; the declaration is checked in its own right.
-      '"${opts[@]}"'*)
-        source_lines 'local -a opts=\(-q ' >/dev/null
-        checked=$(( checked + 1 )) ;;
-      *)
-        printf 'line %s calls curl without -q first, so it would read root/.curlrc: %s\n' \
-          "$n" "$line" >&2
-        return 1 ;;
-    esac
-  done
-  echo "# curl calls audited: $checked (lines ${numbers[*]})" >&3
 }

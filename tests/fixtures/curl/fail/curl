@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
-# curl failing with nothing on stdout, as an unreachable release API would.
-# `check` must never call it for a component that is not installed.
+# curl failing outright, with nothing on stdout: healthz has to read that as
+# "not healthy" rather than as a status code. The case where curl must never
+# be called at all uses the tripwire stub instead, which shouts when it is.
 exit 6
