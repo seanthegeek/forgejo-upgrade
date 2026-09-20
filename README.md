@@ -14,13 +14,13 @@ see [Contain the runner](docs/hardening.md#contain-the-runner) for why.
 
 - [How the script works](docs/how-it-works.md): The step-by-step
   walkthrough of a server and runner upgrade.
-- [Installation]:(docs/installation.md) Instructions for installing forgejo-upgrade.
+- [Installation](docs/installation.md): Instructions for installing forgejo-upgrade.
 - [Usage]:(docs/usage.md) Instructions for using forgejo-upgrade.
 - [Configuration](docs/configuration.md): Every setting, where it is
   read from, and its default.
 - [Hardening](docs/hardening.md): Reducing what a compromise of Forgejo
   or the runner can reach.
-- [Deveelopment]:(docs/development.md) Instructions for development forgejo-upgrade.
+- [Development](docs/development.md): Instructions for development forgejo-upgrade.
 
 ## License
 
