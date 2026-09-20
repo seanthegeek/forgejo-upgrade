@@ -14,17 +14,24 @@
 #   - a CVE record is checked through the MITRE API; the record must name
 #     Forgejo (cve.org itself is a single-page app that answers 200 for
 #     any id).
-# Two more checks are in the code but not in that list: a
-# code.forgejo.org/api/swagger#/... fragment is checked against the real
+# A code.forgejo.org/api/swagger#/... fragment is checked against the real
 # operationId in the published swagger spec, and every fetch sends a
 # User-Agent, because a bare curl gets an empty body from some hosts (NVD
-# among them).
+# among them); both are documented in AGENTS.md's "Every URL is checked by
+# fetching it" bullet alongside the four checks above.
 #
 # The cache lives under tmp/linkcache/, which this script creates. A
 # successful fetch is cached there and never expires; a failed one is
 # refetched every run, so a stalled or flaky host does not stick around as
 # a false failure once it recovers. `rm -rf tmp/linkcache` forces a full
 # refetch, successes included.
+#
+# Two environment overrides exist for tests/unit/links.bats, which needs an
+# isolated cache and a small, offline file list rather than this script's
+# real defaults: LINKS_CACHE (default tmp/linkcache) points the cache
+# somewhere else, and LINKS_FILES (default the file list named above, as one
+# space-separated string) replaces the files scanned for URLs. Neither is
+# meant for interactive use.
 #
 # Before a version is tagged and its release published, the three
 # release-URL failures described under "Releases" in AGENTS.md are
@@ -37,7 +44,8 @@
 # false.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 99
-cache=tmp/linkcache; mkdir -p "$cache"
+cache=${LINKS_CACHE:-tmp/linkcache}; mkdir -p "$cache"
+files=${LINKS_FILES:-"README.md docs/*.md AGENTS.md CLAUDE.md CHANGELOG.md forgejo-upgrade.sh"}
 fail=0; ok=0
 
 # phrases that must appear within the cited lines: "path#Lnn[-Lmm]|phrase"
@@ -97,7 +105,8 @@ EXPECT=(
   'doc/DETAILS#L829|NO_PUBKEY'
 )
 
-fetch() {  # $1 = url -> file in cache, prints status
+fetch() {  # $1 = url -> prints the cache path of the body; HTTP code (000 on
+           # a transport failure or timeout) is in the sibling "$f.code" file
   local f
   f="$cache/$(printf '%s' "$1" | md5sum | cut -c1-32)"
   if [[ ! -s "$f.code" ]] || [[ $(cat "$f.code") != 200 ]]; then
@@ -125,7 +134,11 @@ raw_url() {  # $1 = blob url without fragment -> raw url for the same file
 
 report() { printf '%-5s %s%s\n' "$1" "$2" "${3:+  -- $3}"; if [[ $1 == FAIL ]]; then fail=$((fail+1)); else ok=$((ok+1)); fi; }
 
-mapfile -t urls < <(grep -ohE 'https://[^ )>"'"'"'`]+' README.md docs/*.md AGENTS.md CLAUDE.md CHANGELOG.md forgejo-upgrade.sh \
+# Left unquoted on purpose: the list is the script's own literal or a
+# test's, and it has to be word-split and glob-expanded here to name the
+# files grep reads, the same way the literal list it replaces did.
+# shellcheck disable=SC2086
+mapfile -t urls < <(grep -ohE 'https://[^ )>"'"'"'`]+' $files \
   | sed -e 's/[.,;:]$//' | grep -v '\$' | grep -v '<' | grep -v '\.example\.com' | sort -u)
 [[ ${#urls[@]} -gt 0 ]] || { echo "no URLs found: the extraction is broken"; exit 99; }
 echo "checking ${#urls[@]} distinct URLs"

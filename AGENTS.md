@@ -892,6 +892,11 @@ anything is stopped — is the `fj-space` case in `settings.bats`.
   `AGENTS.md`, `CLAUDE.md` and `CHANGELOG.md` resolves to a real file and,
   if it has one, a real anchor; the checker itself fails on a synthetic
   broken link.
+- `links.bats` — `tests/verify-links.sh` itself, offline, against a stub
+  `curl` and an isolated `LINKS_CACHE`/`LINKS_FILES`: a cached success is
+  reused and never refetched, a failure is refetched every run, a timeout
+  is reported as `HTTP 000` with no cached body, and the exact `HTTP 404`,
+  fragment-found/fragment-missing, and `ok=N fail=M` wordings.
 - `release.bats` — `SCRIPT_VERSION`'s shape, that `version`/`--version`
   print it and nothing else, that the header names the subcommand, that
   `CHANGELOG.md`'s first two sections are `[Unreleased]` and the current
@@ -1097,10 +1102,15 @@ anything yourself.
   a `#fragment` to match an element id on the page, requires a `#Lnn`
   fragment on a pinned source link to exist and, where the EXPECT table
   registers a phrase for it, to contain that phrase, and checks CVE ids
-  through MITRE's API because cve.org itself answers 200 for any id. Run
-  it after any change that adds or moves a link. Source links are pinned
-  to the commits named in the Facts preamble; when a fact is re-verified
-  against a newer commit, move the pin and the line numbers together.
+  through MITRE's API because cve.org itself answers 200 for any id. A
+  `code.forgejo.org/api/swagger#/...` fragment is the one exception to the
+  element-id rule: swagger's fragments are client-side routes, not element
+  ids, so that one is checked against the operation id in the published
+  swagger spec instead. Every fetch sends a `User-Agent`, since NVD and some
+  other hosts answer a bare `curl` with an empty body. Run it after any
+  change that adds or moves a link. Source links are pinned to the commits
+  named in the Facts preamble; when a fact is re-verified against a newer
+  commit, move the pin and the line numbers together.
 
 ## Releases
 
