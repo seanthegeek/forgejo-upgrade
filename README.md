@@ -602,9 +602,12 @@ make test-live   # tests/live: downloads a real runner release and verifies it
 make coverage    # kcov line coverage of the offline suite
 ```
 
-Ubuntu 24.04 has no `kcov` package — it is in 22.04 and again from 25.04
-on — so leave `kcov` out of that line there; `make lint` and `make test`
-work without it, and CI measures coverage.
+The suite needs bats 1.5.0 or later. Ubuntu 24.04 has no `kcov` package —
+it is in 22.04 and again from 25.04 on — so leave `kcov` out of that line
+there; `make lint` and `make test` work without it, and CI measures
+coverage. Ubuntu 22.04 ships bats 1.2.1, too old for the suite: install the
+rest from apt, clone [bats-core](https://github.com/bats-core/bats-core),
+and run the targets with `BATS=/path/to/bats-core/bin/bats`.
 
 `make test-live` is the verification path: it downloads
 [a real release](https://code.forgejo.org/forgejo/runner/releases), checks its

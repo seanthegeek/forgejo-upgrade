@@ -680,8 +680,15 @@ Install the dev-only tools once, on Debian or Ubuntu:
 sudo apt install bats kcov attr acl shellcheck
 ```
 
-Ubuntu 24.04 has no `kcov` package — it is in 22.04 and again from 25.04
-on — so leave `kcov` out of that line there and let CI measure coverage.
+The suite needs bats 1.5.0 or later, for `run --separate-stderr`; every
+test file says so with `bats_require_minimum_version 1.5.0` and stops with
+a clear message on an older one. Debian 12 (1.8), Ubuntu 24.04 (1.10) and
+Ubuntu 26.04 (1.13) are fine. Two Ubuntu releases need a detour: 24.04 has
+no `kcov` package — it is in 22.04 and again from 25.04 on — so leave
+`kcov` out of that line there and let CI measure coverage; and 22.04 ships
+bats 1.2.1, so there install everything but `bats` from apt, clone
+[bats-core](https://github.com/bats-core/bats-core) somewhere, and point
+every target at it with `BATS=/path/to/bats-core/bin/bats`.
 
 This is separate from the script's own dependency list under "No new
 dependencies," above, which is unchanged.
