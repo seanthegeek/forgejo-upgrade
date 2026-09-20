@@ -943,12 +943,73 @@ Patterns that self-review reliably misses.
   out. Check every key name against
   [Forgejo's configuration cheat sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/).
 - **Report outcomes faithfully.** Say which paths ran and which did not.
-- **End with a fresh-context review.** Before opening a PR, have the final
-  diff read by a reviewer who has seen only the diff, and ask "do these hunks
-  agree with each other?", not "is each hunk correct?".
+- **End with a fresh-context review.** The reviewer sees only the repo and
+  the diff, and its prompt is the verbatim text in "The fresh-context
+  review prompt," below; the working agent adds no change-specific
+  questions to it, because a checklist written by the author of the change
+  points the reviewer at what the author already thought of — anything
+  specific the author wants checked goes in the PR description for
+  Copilot, or is checked by the author directly. The review runs on the
+  final diff, and after every round of fixes it runs again, fresh, until a
+  pass comes back with nothing required. A Copilot round with zero
+  findings on the final commit is part of "done," because Copilot is the
+  one reviewer that gets no prompt from us.
+- **A value from outside the repo is untrusted the moment it reaches a
+  shell line.** A tag name, a ref, a CI environment value, a file name:
+  each one is data, not code, until something in the diff proves
+  otherwise. In a Makefile recipe it is read as `$${VAR}` from the
+  environment, never expanded as `$(VAR)` into recipe text; in a workflow
+  `run:` step it goes through an `env:` mapping, never a `${{ }}`
+  expression pasted straight into the script. Give it a hostile-value
+  test, like the metacharacter-tag case in `tests/unit/release.bats`,
+  added with the release workflows.
+- **A command an operator will paste is code.** It gets typed into a root
+  shell on a host that cannot afford to break, so review every command in
+  `README.md` and `docs/` the way the hardening section already is: safe
+  on failure (`curl -qfsS`, `&&` chaining, no partial install left
+  behind), and each flag explained once, the first time it appears.
 - **If it is wrong, it is wrong.** A sentence the source contradicts is
   corrected in place, in the same change that cites the source. No separate
   "rewordings" section, no hedge, no leaving it because it was there first.
+
+### The fresh-context review prompt
+
+Hand this to the reviewer exactly as written; the only thing to change is
+the branch base named in the diff command, if it is not `main`.
+
+```text
+You are reviewing the diff `git diff main..HEAD` of this repository, and
+you have seen none of the work that produced it. Read AGENTS.md first,
+then read every changed file whole, not just the diff hunks. This is a
+read-only review: run the linter and the offline test suite, and do not
+change any file.
+
+Your job is to find what is wrong, not to confirm that the change works.
+Security comes first, but it is not the whole job: treat every value that
+comes from outside the repository as hostile until proven otherwise,
+treat every claim in prose or a comment as unverified until you have
+checked it against the code or the upstream source it cites, and
+remember that every command here is run by root on a host that cannot
+afford to break. A review that finds nothing still has to say what it
+looked for and could not find; it never just says the diff is fine.
+
+Ask whether the hunks agree with each other, not only whether each hunk
+is correct on its own.
+
+Assume the diff contains at least one place where a value from outside
+the repository reaches a shell line unescaped, at least one command an
+operator would paste that misbehaves on failure, and at least one
+sentence in prose or a comment that the code or an upstream source
+contradicts. Find them, or say plainly why you could not.
+
+For each finding, give the file and line, what is wrong, why it matters
+to an operator, and the concrete fix. Say explicitly what checks out
+clean, and list anything you could not verify.
+
+End with a verdict: mergeable as is, mergeable after the listed fixes, or
+not mergeable, with the fixes in the order to apply them. Do not fix
+anything yourself.
+```
 
 ## Out of scope
 
