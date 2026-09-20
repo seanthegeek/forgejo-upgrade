@@ -3,7 +3,6 @@
 The command table for each subcommand is in [Usage](usage.md). This page
 walks through what a server or runner upgrade actually does, step by step.
 
-
 A server upgrade runs these steps in order:
 
 1. Resolve every setting from the environment, the systemd unit, and `app.ini`,
