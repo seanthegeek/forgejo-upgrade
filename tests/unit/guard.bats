@@ -45,10 +45,12 @@ setup() { load ../helpers; common_setup; }
   assert_equal "loaded" "$output"
 }
 
-@test "a bogus subcommand prints the usage and exits 1" {
+@test "a bogus subcommand prints the version, then the usage, and exits 1" {
   run --separate-stderr "$SCRIPT" bogus
   assert_status 1
-  assert_equal "$(usage_range_text)" "$output"
+  local version
+  version=$(in_script 'printf "forgejo-upgrade %s\n" "$SCRIPT_VERSION"')
+  assert_equal "$version"$'\n'"$(usage_range_text)" "$output"
   assert_output_contains "forgejo-upgrade.sh check"
 }
 
