@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# A systemctl that knows no unit at all: `show UNIT -p LoadState --value`
+# answers not-found for every unit and every other property is empty, so
+# both components resolve as not installed. Used where a test needs the
+# "nothing installed on this host" case to come out the same on the
+# development machine, on a GitHub runner that has a real systemctl, and in a
+# container that has none (where the real command would print "command not
+# found" on stderr and spoil a line count).
+case "${1:-}" in
+  show) ;;
+  *) exit 0 ;;
+esac
+shift
+prop=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p) prop=${2:-}; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$prop" in
+  LoadState) echo not-found ;;
+  *) echo "" ;;
+esac

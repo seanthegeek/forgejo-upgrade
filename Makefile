@@ -24,6 +24,7 @@ SHELL_SOURCES := $(SCRIPT) tests/helpers.bash \
                  $(wildcard tests/unit/*.bats) \
                  $(wildcard tests/live/*.bats) \
                  $(wildcard tests/fixtures/bin/*) \
+                 $(wildcard tests/fixtures/nounits/*) \
                  $(wildcard tests/fixtures/curl/*/curl)
 
 .PHONY: all lint test test-live coverage coverage-all report clean
