@@ -762,9 +762,9 @@ one sentence per file:
 The `unshare`-based noexec tests in `exec_probe.bats` skip where user
 namespaces are unavailable: under Docker's default seccomp profile, and on
 Ubuntu's GitHub runner image, which restricts them through AppArmor until
-the workflow lifts that with `sysctl`. In `install_binary.bats` the ACL case skips without `setfacl` and
-`getfacl`, and the extended-attribute case skips without `setfattr` or
-`python3`.
+the workflow lifts that with `sysctl`. In `install_binary.bats` the ACL
+case skips without `setfacl` and `getfacl`, and the extended-attribute case
+skips without `setfattr` or `python3`.
 
 ### What cannot run anywhere
 
