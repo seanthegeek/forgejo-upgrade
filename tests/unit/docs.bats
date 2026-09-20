@@ -7,10 +7,11 @@
 # relative links, and neither does shellcheck. `https://` URLs are a
 # separate concern, checked by tmp/verify-links.sh, not here.
 #
-# The slug rule is the one GitHub and goldmark apply to a heading:
-# lowercase, drop every character that is not a letter, digit, space or
-# hyphen (this is what turns "About `latest`" into "about-latest"), then
-# turn spaces into hyphens.
+# The slug rule follows what GitHub and goldmark do to a heading: lowercase,
+# keep letters, digits, spaces, hyphens and underscores and drop everything
+# else (this is what turns "About `latest`" into "about-latest"), then turn
+# spaces into hyphens. It is the common core of the two, not a full copy of
+# either.
 
 # The sed pattern that strips inline code spans is single-quoted on purpose:
 # it is a literal backtick pattern, not a shell expansion, and that is
@@ -35,14 +36,16 @@ setup() {
 slugify() {
   local input=$1 s
   s=$(LC_ALL=C tr '[:upper:]' '[:lower:]' <<<"$input")
-  s=$(LC_ALL=C sed -E 's/[^a-z0-9 -]//g' <<<"$s")
+  s=$(LC_ALL=C sed -E 's/[^a-z0-9 _-]//g' <<<"$s")
   printf '%s\n' "${s// /-}"
 }
 
 # Every heading's slug in a file, one per line. Headings are lines matching
-# ^#{1,6} (the only form this project's markdown uses).
+# ^#{1,6} (the only form this project's markdown uses) outside fenced code
+# blocks, where a "# comment" line in a shell example is not a heading.
 heading_slugs_in() {
-  grep -E '^#{1,6} ' "$1" | sed -E 's/^#{1,6} +//' | while IFS= read -r line; do
+  awk '/^```/ { fenced = !fenced; next } !fenced' "$1" \
+    | grep -E '^#{1,6} ' | sed -E 's/^#{1,6} +//' | while IFS= read -r line; do
     slugify "$line"
   done
 }
@@ -160,7 +163,9 @@ check_file_links() {
   local f base bad=""
   for f in "$ROOT"/docs/*.md; do
     base=$(basename "$f")
-    grep -qF "docs/$base" "$ROOT/README.md" \
+    # Only the index itself counts: a pointer elsewhere in the README (the
+    # summary links the hardening page) must not stand in for a bullet.
+    sed -n '/^## Documentation/,/^## /p' "$ROOT/README.md" | grep -qF "docs/$base" \
       || bad+="README.md's Documentation index has no link to docs/$base"$'\n'
   done
   if [[ -n $bad ]]; then

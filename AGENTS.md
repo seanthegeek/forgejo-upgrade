@@ -884,9 +884,9 @@ anything is stopped — is the `fj-space` case in `settings.bats`.
   `sudo` prefix, and its ordering before the start/status hint.
 - `db_type.bats` — `FORGEJO_DB_TYPE` and `db_is_external`/`backup_note`/
   `restore_hint`.
-- `docs.bats` — every relative link in `README.md`, `docs/*.md`, and
-  `AGENTS.md` resolves to a real file and, if it has one, a real anchor;
-  the checker itself fails on a synthetic broken link.
+- `docs.bats` — every relative link in `README.md`, `docs/*.md`,
+  `AGENTS.md` and `CLAUDE.md` resolves to a real file and, if it has one,
+  a real anchor; the checker itself fails on a synthetic broken link.
 
 `tests/live/`
 
@@ -990,8 +990,8 @@ project. Each page under `docs/` — `how-it-works.md`, `configuration.md`,
 `hardening.md` — covers exactly one topic an operator reads start to
 finish, linked from the README's "Documentation" index. Update the docs
 in the same change as the behavior they describe. A relative link between
-`README.md`, `docs/*.md`, and `CLAUDE.md` (a path, with or without a
-`#anchor`) is checked by `tests/unit/docs.bats`, which fails if the
+`README.md`, `docs/*.md`, `AGENTS.md` and `CLAUDE.md` (a path, with or
+without a `#anchor`) is checked by `tests/unit/docs.bats`, which fails if the
 target file or heading does not exist; a `https://` URL in any of them is
 checked separately, by `tmp/verify-links.sh` (see "Markdown style",
 above).

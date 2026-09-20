@@ -146,9 +146,9 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ```
 
-[How the script works](how-it-works.md) keeps a `setcap` file
-capability across an upgrade for installs that rely on one without this
-profile; under this profile,
+The script [keeps a `setcap` file capability](how-it-works.md) across an
+upgrade for installs that rely on one without this profile; under this
+profile,
 [`AmbientCapabilities=`](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#AmbientCapabilities=)
 is what does the work instead.
 
@@ -263,7 +263,8 @@ hand it. Where that code runs decides what a malicious workflow can reach.
   fixes, [CVE-2026-89151](https://www.cve.org/CVERecord?id=CVE-2026-89151),
   closed a way for a repository-scoped API token to modify content outside its
   scope.
-- `BACKUP_DIR` has to be writable by the Forgejo user, because
+- [`BACKUP_DIR`](configuration.md#forgejo-settings) has to be writable by
+  the Forgejo user, because
   [`forgejo dump` runs as that account](https://forgejo.org/docs/latest/admin/installation/binary/#general-hints-for-using-forgejo).
   Copy completed dumps — and, for PostgreSQL or MySQL, the native database dump
   taken alongside them — somewhere that account cannot write: a root-owned
