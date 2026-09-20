@@ -32,6 +32,9 @@
 #
 # Zero URLs found is a failure. Exits non-zero when any URL fails; the
 # count is printed.
+# No -e: a URL that fails must be reported and counted, not end the run at
+# the first transport error or the first arithmetic test that comes out
+# false.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 99
 cache=tmp/linkcache; mkdir -p "$cache"
@@ -53,6 +56,7 @@ EXPECT=(
   'modules/setting/config_provider.go#L189-L194|configProviderLoadOptions'
   'modules/setting/config_provider.go#L293-L294|0o600'
   'modules/setting/security.go#L415-L430|INTERNAL_TOKEN'
+  'modules/setting/security.go#L128-L135|createSymmetricSigningKeyCfg'
   'modules/setting/packages.go#L72-L78|package-upload'
   'modules/private/internal.go#L56|unix'
   'modules/setting/server.go#L288-L304|LOCAL_ROOT_URL'
@@ -97,8 +101,13 @@ fetch() {  # $1 = url -> file in cache, prints status
   local f
   f="$cache/$(printf '%s' "$1" | md5sum | cut -c1-32)"
   if [[ ! -s "$f.code" ]] || [[ $(cat "$f.code") != 200 ]]; then
-    curl -q -sL --max-time 60 -A 'forgejo-upgrade-linkcheck/1.0' \
-      -o "$f" -w '%{http_code}' "$1" > "$f.code"
+    # curl's exit status is judged as well as the HTTP code: a body cut
+    # short by --max-time still reports 200, and caching that as a success
+    # would pin a truncated page until someone cleared the cache.
+    if ! curl -q -sL --max-time 60 -A 'forgejo-upgrade-linkcheck/1.0' \
+         -o "$f" -w '%{http_code}' "$1" > "$f.code"; then
+      printf '000\n' > "$f.code"; rm -f "$f"
+    fi
   fi
   printf '%s\n' "$f"
 }
@@ -154,6 +163,7 @@ for url in "${urls[@]}"; do
   if [[ $base == https://code.forgejo.org/api/swagger ]]; then
     f=$(fetch "https://code.forgejo.org/swagger.v1.json")
     op=${frag##*/}
+    if [[ $(cat "$f.code") != 200 ]]; then report FAIL "$url" "swagger spec: HTTP $(cat "$f.code")"; continue; fi
     if grep -q "\"operationId\": *\"$op\"" "$f"; then report OK "$url" "operation $op in spec"; else report FAIL "$url" "operation $op not in spec"; fi
     continue
   fi

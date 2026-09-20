@@ -2,7 +2,7 @@
 # script on a server: it needs only the tools listed in AGENTS.md. These
 # targets need shellcheck, bats-core and, for coverage, kcov.
 #
-#   make lint            shellcheck over the script, the helpers and every stub
+#   make lint            shellcheck over the script, the helpers, the link checker and every stub
 #   make test            the offline suite
 #   make test-live       the suite that talks to the release API and a keyserver
 #   make links           check every https:// URL in the docs and script (network)

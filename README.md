@@ -138,7 +138,7 @@ tools are dev-only and are never needed on the Forgejo host:
 
 ```bash
 sudo apt install bats kcov attr acl shellcheck
-make lint        # shellcheck over the script, the helpers and every stub
+make lint        # shellcheck over the script, the helpers, the link checker and every stub
 make test        # the offline suite in tests/unit, no network
 make test-live   # tests/live: downloads a real runner release and verifies it
 make links       # check every https:// URL in the docs and script (network)

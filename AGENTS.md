@@ -565,8 +565,9 @@ and
   [`FORGEJO_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L132)
   or
   [`GITEA_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L124)
-  in the environment hits
-  `log.Fatal("FORGEJO_WORK_DIR (work path) must be absolute path")`, a
+  in the environment hits `log.Fatal` with the message naming that
+  variable (`"GITEA_WORK_DIR (work path) must be absolute path"` or
+  `"FORGEJO_WORK_DIR (work path) must be absolute path"`), a
   relative `--work-path` hits
   [`log.Fatal("--work-path must be absolute path")`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L157),
   and a relative `WORK_PATH` in `app.ini` hits
@@ -695,7 +696,8 @@ every target at it with `BATS=/path/to/bats-core/bin/bats`.
 This is separate from the script's own dependency list under "No new
 dependencies," above, which is unchanged.
 
-- `make lint` — shellcheck over the script, `tests/helpers.bash`, every
+- `make lint` — shellcheck over the script, `tests/helpers.bash`,
+  `tests/verify-links.sh`, every
   `.bats` file, and the fixture stub binaries.
 - `make test` — the offline suite, `tests/unit/`. No network.
 - `make test-live` — the suite that talks to the release API and a
@@ -1083,14 +1085,15 @@ anything yourself.
 - **Every URL is checked by fetching it.** `make links` runs
   `tests/verify-links.sh`, which extracts every `https://` URL from
   `README.md`, `docs/*.md`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md` and
-  the script, requires HTTP 200, requires a `#fragment` to match an
-  element id on the page, requires a `#Lnn` fragment on a pinned source
-  link to exist and, where the EXPECT table registers a phrase for it, to
-  contain that phrase, and checks CVE ids through MITRE's API because
-  cve.org itself answers 200 for any id. Run it after any change that
-  adds or moves a link. Source links are pinned to the commits named in
-  the Facts preamble; when a fact is re-verified against a newer commit,
-  move the pin and the line numbers together.
+  the script (skipping one that holds a `$`, a `<`, or `.example.com`,
+  since those are placeholders, not links), requires HTTP 200, requires
+  a `#fragment` to match an element id on the page, requires a `#Lnn`
+  fragment on a pinned source link to exist and, where the EXPECT table
+  registers a phrase for it, to contain that phrase, and checks CVE ids
+  through MITRE's API because cve.org itself answers 200 for any id. Run
+  it after any change that adds or moves a link. Source links are pinned
+  to the commits named in the Facts preamble; when a fact is re-verified
+  against a newer commit, move the pin and the line numbers together.
 
 ## Releases
 
