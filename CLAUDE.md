@@ -27,7 +27,8 @@ split:
    considered done. The review uses the prompt in AGENTS.md's "The
    fresh-context review prompt" verbatim, apart from the one substitution
    allowed (the branch base, if it is not `origin/main`) and the one
-   addition (a one-line header naming the repository path and branch),
+   addition (a one-line header naming the repository path and branch and,
+   from the second round on, the files changed since the previous round),
    and runs again after every round of fixes, on the final diff,
    including `make test-live` when the diff touches any function
    AGENTS.md's Testing section names for it, until a pass finds nothing
