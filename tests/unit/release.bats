@@ -138,7 +138,8 @@ setup() {
   # /bin/sh's test implementing the obsolescent -o at seven arguments,
   # which POSIX leaves unspecified above four; dash and bash both do, so it
   # bites here and in CI, but a shell whose test errored instead would exit
-  # non-zero and pass this test with the quotes gone. Quoted, it fails and
+  # non-zero and pass this test with the quotes gone. The structural case
+  # below covers that shell. Quoted, it fails and
   # the message names the tag whole.
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check "TAG=$2"' \
     _ "$ROOT" "a = b -o v$VERSION"

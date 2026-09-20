@@ -27,10 +27,12 @@ split:
    Every round, whichever model runs it, uses the prompt in AGENTS.md's
    "The fresh-context review prompt" verbatim, apart from the one
    substitution allowed (the branch base, if it is not `origin/main`) and
-   the one addition (a one-line header naming the repository path and
-   branch and, from a reviewer's second round on, the files changed since
-   that reviewer's previous round), and includes `make test-live` when the
-   diff touches any function AGENTS.md's Testing section names for it. On a
+   the one addition (a one-line header naming the repository path and the
+   change under review, which on a fork's pull request is its number or head
+   commit id rather than its branch name, and, from a reviewer's second
+   round on, the files changed since that reviewer's previous round), and
+   includes `make test-live` when the diff touches any function AGENTS.md's
+   Testing section names for it. On a
    pull request from a fork the round is advisory, because the harness
    hands the reviewer the session's own snapshot of `CLAUDE.md` and
    `AGENTS.md` as instructions before it reads the prompt, and reviewing
