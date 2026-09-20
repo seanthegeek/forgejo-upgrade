@@ -1092,11 +1092,13 @@ shell-safe quoted or not, and is still prompt-hostile. A project
 automating the substitution therefore resolves the base to a commit id and
 substitutes that id, never the name it was handed — in a script, not at an
 interactive prompt, `BASE=$(git rev-parse --verify "$raw^{commit}") ||
-exit 1`. A forty-character hex id cannot carry a `;`, a backtick or a
+exit 1`. A hex commit id cannot carry a `;`, a backtick or a
 sentence, so it is safe both on the shell line, which the prompt spells
 unquoted, and in the prompt text the reviewer reads as instructions.
-Resolving alone would not do it: `rev-parse --verify` is a liveness check
-and accepts a prompt-hostile name happily if a branch by that name exists.
+Using `rev-parse --verify` as a name check alone would not do it: it is a
+liveness check and accepts a prompt-hostile name happily if a branch by
+that name exists. What protects is substituting its output, not consulting
+its exit status.
 Dropping `--quiet` is what makes a failure visible, since `--quiet` exits 1
 in silence while the plain form prints `fatal: Needed a single revision`;
 the `|| exit 1` is what matters, because an unchecked failure leaves
