@@ -146,6 +146,14 @@ setup() {
   assert_stderr_contains "release-check: TAG=a = b -o v$VERSION does not match v$VERSION"
 }
 
+@test "the TAG comparison in the Makefile is quoted, whatever the shell does" {
+  # The behavioural case above proves the gate flips, but only on a shell
+  # whose test implements the obsolescent seven-argument -o. This one pins
+  # the quotes themselves and holds on any shell: source_lines fails loudly
+  # when nothing matches, so it cannot pass by aiming at a string that moved.
+  source_lines '@test "\$\$\{TAG\}" = "v\$\(SCRIPT_VERSION\)"' "$ROOT/Makefile"
+}
+
 @test "make release-check fails with a clear message when TAG is unset" {
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check' \
     _ "$ROOT"

@@ -1079,9 +1079,10 @@ that.
 
 Only the one substitution allowed (the branch base named in the diff
 command, if it is not `origin/main`) and the one addition (a one-line
-header naming the repository path and branch and, from a reviewer's second
-round on, the files changed since that reviewer's previous round) may
-differ from that verbatim text.
+header naming the repository path and the change under review — its branch,
+or on a fork's pull request the safe identifier the paragraphs below require
+instead — and, from a reviewer's second round on, the files changed since
+that reviewer's previous round) may differ from that verbatim text.
 
 Write that base yourself rather than pasting it from the forge.
 `git check-ref-format` rejects a space and a caret in a ref name but

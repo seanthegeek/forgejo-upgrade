@@ -92,16 +92,16 @@ fake_bin() {
 
 # --- structural checks ----------------------------------------------------------
 
-# Print the line numbers in the script matching an extended regex, one per
-# line. Zero matches is a failure, not an empty pass: a structural check aimed
-# at a string that is no longer there would otherwise look green while
-# checking nothing (AGENTS.md, "An ad hoc check that matches nothing is broken,
-# not green").
+# Print the line numbers matching an extended regex, one per line, in the
+# script or in the file named as the second argument. Zero matches is a
+# failure, not an empty pass: a structural check aimed at a string that is no
+# longer there would otherwise look green while checking nothing (AGENTS.md,
+# "An ad hoc check that matches nothing is broken, not green").
 source_lines() {
-  local hits
-  hits=$(grep -nE -- "$1" "$SCRIPT") || hits=""
+  local file=${2:-$SCRIPT} hits
+  hits=$(grep -nE -- "$1" "$file") || hits=""
   if [[ -z $hits ]]; then
-    printf 'source_lines: no line of %s matches the regex: %s\n' "$SCRIPT" "$1" >&2
+    printf 'source_lines: no line of %s matches the regex: %s\n' "$file" "$1" >&2
     return 1
   fi
   printf '%s\n' "$hits" | cut -d: -f1
