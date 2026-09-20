@@ -996,8 +996,10 @@ Patterns that self-review reliably misses.
   reviewer's own instructions, labelled as overriding default behaviour,
   before it reads a word of the prompt; they are a snapshot of the
   checkout taken when the session started, and a subagent inherits its
-  parent's copy. Observed, not assumed: a round in this session was
-  handed a `CLAUDE.md` two commits older than the working tree. So
+  parent's copy. Observed, not assumed, while preparing the
+  `review-trust-boundary` branch: rounds were handed a `CLAUDE.md` several
+  commits older than the working tree, one of them older than `origin/main`
+  itself. So
   switching branches before spawning a reviewer changes nothing, and a
   round spawned from a session that started on a fork's branch is
   steered by the fork's copies however the prompt is worded.
@@ -1027,7 +1029,7 @@ Patterns that self-review reliably misses.
   reads of `TAG` sit inside a `test`, one of them the `=` comparison, and
   unquoted a `TAG` of `a = b -o vX.Y.Z` satisfies a comparison the real
   tag would fail. A pushed tag cannot carry that value — the same
-  `git check-ref-format` rule quoted below rejects a space, and rejects
+  `git check-ref-format` rule described below rejects a space, and rejects
   `*`, `?` and `[` too — so the forge path cannot reach it today, and a
   hand-run `make release-check TAG=...` can. The quotes are what keeps
   the gate from resting on `check-ref-format` staying as it is, and on
@@ -1067,10 +1069,10 @@ bring the base up to date and look at what the review will cover, with
 review's scope; a commit in it whose work is already upstream, squash-merged
 or rebased, means the branch wants rebasing first, and an empty list means
 HEAD is already contained in `origin/main` — nothing to review, so do not
-hand out the prompt. A fetch never moves the
-local `main`, which is why the log command and the prompt's diff command
-both name `origin/main` rather than `main`: a base read
-from a stale local branch is what puts already-merged commits into a review.
+hand out the prompt. A fetch never moves the local `main`, which is why the
+log command and the prompt's diff command both name `origin/main` rather
+than `main`: a base read from a stale local branch is what puts
+already-merged commits into a review.
 If the fetch fails — offline, a proxy, expired credentials — the `&&` stops
 before the log and no list prints; fix the fetch rather than reviewing
 against a base that never moved, because nothing in the prompt can detect
@@ -1081,6 +1083,11 @@ command, if it is not `origin/main`) and the one addition (a one-line
 header naming the repository path and branch and, from a reviewer's second
 round on, the files changed since that reviewer's previous round) may
 differ from that verbatim text.
+
+The same goes for the branch name in the header, which is the head branch:
+on a fork's pull request that string is chosen by the party under review and
+lands in the prompt by the same route, so write the pull request number or
+the head commit id there instead.
 
 Write that base yourself rather than pasting it from the forge.
 `git check-ref-format` rejects a space and a caret in a ref name but

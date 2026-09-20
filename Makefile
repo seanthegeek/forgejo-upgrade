@@ -105,8 +105,7 @@ clean:
 # through a hand-run make release-check TAG=..., and the quotes are what
 # stop the gate depending on git's ref-name rules staying as they are.
 # A variable given on make's command line is exported to the recipe's
-# environment, which is how the release workflows
-# pass it.
+# environment, which is how the release workflows pass it.
 release-check:
 	@test -n "$${TAG:-}" || { \
 	  echo "release-check: TAG is not set; run as, e.g., make release-check TAG=v$(SCRIPT_VERSION)" >&2; \
