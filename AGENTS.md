@@ -973,8 +973,8 @@ Patterns that self-review reliably misses.
   script through the environment, a `GITHUB_*` default variable or an
   `env:` mapping, never as a `${{ }}` expression pasted into the script.
   Give it a hostile-value test, like the metacharacter-tag case in
-  `tests/unit/release.bats`, added in PR #4 after Copilot's review of the
-  release workflows found the `$(TAG)` expansion.
+  `tests/unit/release.bats`, added in PR #4 after Copilot's review found
+  the `$(TAG)` expansion in the Makefile's `release-check` recipe.
 - **A command an operator will paste is code.** It gets typed into a root
   shell on a host that cannot afford to break, so review every command in
   `README.md` and `docs/` the way the install command in `README.md`
@@ -996,18 +996,21 @@ because a fetch never moves the local `main`, and a merge base taken from a
 stale local branch would put already-merged commits into the review. The
 only additions allowed are the branch base named in the diff command, if it
 is not `origin/main`, and a one-line header naming the repository path and
-branch.
+branch. Two things the prompt's "do not change any file" does not forbid:
+`tmp/verify-links.sh` and the cache it writes under `tmp/` are gitignored
+scratch, so a reviewer in a fresh clone recreates the script from "Markdown
+style" and says so; and its three release-URL failures before a version is
+tagged are the expected ones "Releases" describes, not findings.
 
 ```text
 You are reviewing the diff `git diff origin/main...HEAD` of this
 repository, and you have seen none of the work that produced it. Read
 AGENTS.md from the checkout first, then read every changed file whole,
-not just the diff hunks. This is a
-read-only review: run the linter and the offline test suite; run
-`make test-live` when the diff touches any function AGENTS.md's Testing
-section names for it; when the diff touches markdown, run the markdownlint
-command from `.forgejo/workflows/ci.yml` and `tmp/verify-links.sh`; and do
-not change any file.
+not just the diff hunks. This is a read-only review: run the linter and
+the offline test suite; run `make test-live` when the diff touches any
+function AGENTS.md's Testing section names for it; when the diff touches
+markdown, run the markdownlint command from `.forgejo/workflows/ci.yml`
+and `tmp/verify-links.sh`; and do not change any file.
 
 Your job is to find what is wrong, not to confirm that the change works.
 Security comes first, but it is not the whole job: treat every value that
