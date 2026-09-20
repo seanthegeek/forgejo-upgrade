@@ -35,9 +35,12 @@ setup() { load ../helpers; common_setup; }
 }
 
 @test "sourcing the script loads the definitions above the dispatch" {
-  # A function from the top of the file and one from the bottom, so a guard
-  # placed too early would be caught as well as one that never returns.
-  run --separate-stderr in_script 'declare -F log rollback_command >/dev/null && echo loaded'
+  # A function from the top of the file and the last one defined before the
+  # dispatch, `check`, so a guard placed anywhere above that last definition
+  # would be caught as well as one that never returns. (An earlier version
+  # checked rollback_command, which is defined near line 164 and proved
+  # nothing about the bottom of the file.)
+  run --separate-stderr in_script 'declare -F log check >/dev/null && echo loaded'
   assert_status 0
   assert_equal "loaded" "$output"
 }

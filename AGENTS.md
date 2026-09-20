@@ -8,10 +8,12 @@ downloads a release, checks the GPG signature and sha256, backs up, swaps the
 binary keeping the old one, restarts the service, and verifies health.
 `README.md` documents usage and a hardening guide for the two services.
 
-No application code, no database, no CI. The deliverable is a script an
+No application code and no database. The deliverable is a script an
 operator runs as root on a machine they cannot afford to break, so caution in
 the script beats cleverness. It is developed on a machine that does not run
-Forgejo and deployed elsewhere by hand.
+Forgejo and deployed elsewhere by hand. CI on GitHub and Forgejo runs the
+linter, the test suites and coverage on every pull request and on every push
+to `main`; see "Testing" below.
 
 ## Conventions
 
