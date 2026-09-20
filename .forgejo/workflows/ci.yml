@@ -139,4 +139,4 @@ jobs:
         run: |
           npx --yes markdownlint-cli2@0.23.2 \
             --config /tmp/markdownlint.json \
-            README.md AGENTS.md CLAUDE.md
+            README.md docs/*.md AGENTS.md CLAUDE.md
