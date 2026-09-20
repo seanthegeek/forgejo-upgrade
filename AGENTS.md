@@ -969,7 +969,7 @@ Patterns that self-review reliably misses.
   small the edit, because an operator acts on these documents. Every round
   runs in fresh context, so what a reviewer remembers never decides how
   much of the diff it reads; the same reviewer means the same model
-  reading this diff again. A later round by the same reviewer is scoped:
+  reviewing this change again. A later round by the same reviewer is scoped:
   the header names the files changed since that reviewer's previous round,
   and that reviewer reads those whole and the rest of the diff only for
   agreement with them, resting on the author's word that an earlier round
