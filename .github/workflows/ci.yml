@@ -42,6 +42,16 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bats kcov shellcheck acl attr gnupg curl make git ca-certificates
 
+      - name: Allow unprivileged user namespaces for the noexec probe
+        # Ubuntu's runner image restricts unprivileged user namespaces through
+        # AppArmor (kernel.apparmor_restrict_unprivileged_userns=1), so
+        # `unshare -Urm` fails and the three noexec-probe tests in
+        # tests/unit/exec_probe.bats skip, as the first run of this workflow
+        # showed. The runner is a throwaway VM with passwordless sudo, so the
+        # restriction is lifted for the job and the tests run for real. The
+        # Forgejo job cannot do this inside its container, and skips instead.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Lint the shell
         run: make lint
 

@@ -79,8 +79,9 @@ jobs:
         #
         # One test differs here: the noexec probe builds its mount namespace
         # with `unshare -Urm`, which the container runtime's default seccomp
-        # profile blocks, so that test calls `skip` and the rest of the file
-        # runs. Nothing to fix; it runs on the GitHub VM runner.
+        # profile blocks, so those tests call `skip` and the rest of the file
+        # runs. Nothing to fix here: the GitHub job lifts Ubuntu's AppArmor
+        # restriction on user namespaces with sysctl and runs them for real.
         run: make coverage-all
 
       - name: Report the coverage percentage
