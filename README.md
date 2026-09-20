@@ -1,17 +1,14 @@
 # forgejo-upgrade
 
-A single Bash script that upgrades binary installs of
+A single Bash script that makes binary installs of
 [Forgejo](https://forgejo.org) and
-[forgejo-runner](https://code.forgejo.org/forgejo/runner) safely: it
+[forgejo-runner](https://code.forgejo.org/forgejo/runner) easy: it
 [verifies the release signature and checksum](https://forgejo.org/download/#installation-from-binary),
 backs up before touching anything, keeps the previous binary for rollback, and
 checks that the service came back healthy. It upgrades whichever of the two is
 installed on a given host — a host may run Forgejo, the runner, or both. The
 runner is optional and is often installed on a separate host from Forgejo;
 see [Contain the runner](docs/hardening.md#contain-the-runner) for why.
-
-It exists because Forgejo has shipped a security release nearly every month of
-2026, and a patch should take one command, not a checklist.
 
 ## Documentation
 
