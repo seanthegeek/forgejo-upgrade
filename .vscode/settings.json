@@ -23,6 +23,7 @@
     "getfattr",
     "GITEA",
     "GNUPGHOME",
+    "goldmark",
     "gopkg",
     "healthz",
     "hkps",

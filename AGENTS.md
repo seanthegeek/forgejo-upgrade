@@ -6,7 +6,8 @@ One Bash script, `forgejo-upgrade.sh`, that upgrades binary installs of
 [Forgejo](https://forgejo.org) and forgejo-runner on a systemd host. It
 downloads a release, checks the GPG signature and sha256, backs up, swaps the
 binary keeping the old one, restarts the service, and verifies health.
-`README.md` documents usage and a hardening guide for the two services.
+`README.md` is the overview: install and usage for the two services;
+`docs/` holds how the script works, configuration, and hardening.
 
 No application code and no database. The deliverable is a script an
 operator runs as root on a machine they cannot afford to break, so caution in
@@ -191,8 +192,9 @@ that every collaborator picks them up the same way.
   [NVD](https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=Forgejo),
   never in Forgejo's own release notes or security-announcements issues,
   which carry neither. NVD answers a bare `curl` with an empty body; pass a
-  `User-Agent`. The README's "CVSS 9.9" for the 16.0.4 template repository
-  fix was wrongly called unsupported after reading only Forgejo's notes.
+  `User-Agent`. `docs/hardening.md`'s "CVSS 9.9" for the 16.0.4 template
+  repository fix was wrongly called unsupported after reading only
+  Forgejo's notes.
 - **A number in the docs is a claim like any other.** A count, a score, a
   timeout, a version: each is checked against its artifact the same way a
   version string is, before it is written and again when it is cited.
@@ -882,6 +884,9 @@ anything is stopped — is the `fj-space` case in `settings.bats`.
   `sudo` prefix, and its ordering before the start/status hint.
 - `db_type.bats` — `FORGEJO_DB_TYPE` and `db_is_external`/`backup_note`/
   `restore_hint`.
+- `docs.bats` — every relative link in `README.md`, `docs/*.md`,
+  `AGENTS.md` and `CLAUDE.md` resolves to a real file and, if it has one,
+  a real anchor; the checker itself fails on a synthetic broken link.
 
 `tests/live/`
 
@@ -916,15 +921,16 @@ Patterns that self-review reliably misses.
   change to the sed pattern must be tested against both a real `--version`
   string and the exact-match compare in `upgrade_forgejo` /
   `upgrade_runner`; the defaults block in the script and the variable
-  table in `README.md`; the header comment and the `sed` range that prints
-  it; the subcommand `case` and the command table in `README.md`; the
-  settings tables in `README.md` and the two `resolve_*_settings`
-  functions; the header's override list and the README tables.
+  table in `docs/configuration.md`; the header comment and the `sed`
+  range that prints it; the subcommand `case` and the command table in
+  `README.md`; the settings tables in `docs/configuration.md` and the
+  two `resolve_*_settings` functions; the header's override list and the
+  tables in `docs/configuration.md`.
 - **An ad hoc check that matches nothing is broken, not green.** A `grep -q`
   aimed at the wrong string produces a passing-looking result. Make one-off
   checks fail loudly on zero matches.
-- **Review the rendered text, not just the changed lines.** The hardening
-  section of `README.md` is followed by an operator editing a live server.
+- **Review the rendered text, not just the changed lines.**
+  `docs/hardening.md` is followed by an operator editing a live server.
   A wrong `app.ini` key or drop-in directive fails silently or locks them
   out. Check every key name against
   [Forgejo's configuration cheat sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/).
@@ -945,8 +951,8 @@ Patterns that self-review reliably misses.
   signing key, and version strings differ. Do not add a compatibility mode.
 - Major-version migration logic. The script warns and confirms; reading the
   release notes and restoring a dump if needed remain the operator's job.
-- Managing `app.ini` or the systemd units. The README explains hardening;
-  the script never edits configuration.
+- Managing `app.ini` or the systemd units. `docs/hardening.md` explains
+  hardening; the script never edits configuration.
 
 ## Markdown style
 
@@ -959,10 +965,11 @@ Patterns that self-review reliably misses.
 - A URL that has to stand alone goes in angle brackets.
 - **Every URL is checked by fetching it.** `tmp/verify-links.sh` (gitignored,
   recreate it from the description here if it is gone) extracts every
-  `https://` URL from the README, AGENTS.md and the script, requires HTTP
-  200, requires a `#fragment` to match an element id on the page, requires
-  a `#Lnn` fragment on a pinned source link to exist and to contain the
-  phrase the fact quotes, and checks CVE ids through MITRE's API because
+  `https://` URL from `README.md`, `docs/*.md`, `AGENTS.md` and the
+  script, requires HTTP 200, requires a `#fragment` to match an element
+  id on the page, requires a `#Lnn` fragment on a pinned source link to
+  exist and to contain the phrase the fact quotes, and checks CVE ids
+  through MITRE's API because
   cve.org itself answers 200 for any id. Run it after any change that adds
   or moves a link. Source links are pinned to the commits named in the
   Facts preamble; when a fact is re-verified against a newer commit, move
@@ -977,8 +984,14 @@ Patterns that self-review reliably misses.
 
 ## Documentation
 
-`README.md` is deliberately the whole manual: usage, configuration, and
-hardening for a one-script project. If it grows past those three topics,
-move the hardening guide to `docs/hardening.md` and leave the README as an
-overview and pointer. Update the docs in the same change as the behavior
-they describe.
+`README.md` is deliberately an overview and a pointer, not the whole
+manual: the project summary, installation, and usage for a one-script
+project. Each page under `docs/` — `how-it-works.md`, `configuration.md`,
+`hardening.md` — covers exactly one topic an operator reads start to
+finish, linked from the README's "Documentation" index. Update the docs
+in the same change as the behavior they describe. A relative link between
+`README.md`, `docs/*.md`, `AGENTS.md` and `CLAUDE.md` (a path, with or
+without a `#anchor`) is checked by `tests/unit/docs.bats`, which fails if the
+target file or heading does not exist; a `https://` URL in any of them is
+checked separately, by `tmp/verify-links.sh` (see "Markdown style",
+above).

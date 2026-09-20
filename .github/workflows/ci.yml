@@ -115,5 +115,6 @@ jobs:
           config: /tmp/markdownlint.json
           globs: |
             README.md
+            docs/*.md
             AGENTS.md
             CLAUDE.md
