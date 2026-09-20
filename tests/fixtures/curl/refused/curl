@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# What curl does when nothing is listening yet: nothing on stdout, its own
+# message on stderr, exit 7 (CURLE_COULDNT_CONNECT). Expected while a service
+# is still starting, so healthz treats it as "not healthy yet".
+echo "curl: (7) Failed to connect to 127.0.0.1 port 3000: Connection refused" >&2
+exit 7

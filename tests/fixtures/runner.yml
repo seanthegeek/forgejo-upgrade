@@ -1,0 +1,8 @@
+# A minimal forgejo-runner config. Only "file:" under "runner:" is read, by
+# yaml_get, which is not a YAML parser and must not be used as one. The path
+# is resolved against the daemon's working directory, not against this file.
+runner:
+  file: .runner
+  capacity: 1
+log:
+  level: info

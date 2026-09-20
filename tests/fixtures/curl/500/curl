@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# curl without -f on a 500: it exits 0, writes the server's error body to the
+# -o file, and prints the status code for -w '%{http_code}'. fetch_sha256
+# reads that status itself and must stop the upgrade on anything but 200 or
+# 404.
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+[[ -n $out ]] && printf '<html>500 Internal Server Error</html>\n' > "$out"
+printf '500'
+exit 0

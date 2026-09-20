@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# curl failing with nothing on stdout, as an unreachable release API would.
+# `check` must never call it for a component that is not installed.
+exit 6

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# The same shape for a 404: the body of the "not found" page is written to the
+# -o file and 404 is printed. This is the one status fetch_sha256 treats as
+# "the .sha256 was not published" rather than as a failure, so it must leave
+# no file behind.
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+[[ -n $out ]] && printf '<html>404 Not Found</html>\n' > "$out"
+printf '404'
+exit 0
