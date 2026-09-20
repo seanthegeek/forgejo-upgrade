@@ -6,7 +6,7 @@
 # class of breakage
 # nothing else in this suite catches — markdownlint does not resolve
 # relative links, and neither does shellcheck. `https://` URLs are a
-# separate concern, checked by tmp/verify-links.sh, not here.
+# separate concern, checked by tests/verify-links.sh, not here.
 #
 # The slug rule follows what GitHub and goldmark do to a heading: lowercase,
 # keep letters, digits, spaces, hyphens and underscores and drop everything

@@ -562,11 +562,12 @@ and
 - **Forgejo refuses a relative work path from every source.** Per
   `modules/setting/path.go`, `InitWorkPathAndCfgProvider`, current
   `forgejo` branch, a relative
-  [`FORGEJO_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L124)
+  [`FORGEJO_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L132)
   or
-  [`GITEA_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L132)
-  in the environment hits
-  `log.Fatal("FORGEJO_WORK_DIR (work path) must be absolute path")`, a
+  [`GITEA_WORK_DIR`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L124)
+  in the environment hits `log.Fatal` with the message naming that
+  variable (`"GITEA_WORK_DIR (work path) must be absolute path"` or
+  `"FORGEJO_WORK_DIR (work path) must be absolute path"`), a
   relative `--work-path` hits
   [`log.Fatal("--work-path must be absolute path")`](https://codeberg.org/forgejo/forgejo/src/commit/a0ad12ba49c03d56347b95f1b40af0a304746e00/modules/setting/path.go#L157),
   and a relative `WORK_PATH` in `app.ini` hits
@@ -695,11 +696,14 @@ every target at it with `BATS=/path/to/bats-core/bin/bats`.
 This is separate from the script's own dependency list under "No new
 dependencies," above, which is unchanged.
 
-- `make lint` — shellcheck over the script, `tests/helpers.bash`, every
+- `make lint` — shellcheck over the script, `tests/helpers.bash`,
+  `tests/verify-links.sh`, every
   `.bats` file, and the fixture stub binaries.
 - `make test` — the offline suite, `tests/unit/`. No network.
 - `make test-live` — the suite that talks to the release API and a
   keyserver, `tests/live/`.
+- `make links` — fetches every `https://` URL cited in the docs and the
+  script and checks it; needs outbound network access.
 - `make coverage` / `make coverage-all` — kcov line coverage of the offline
   suite alone, or of both suites merged.
 - `bats tests/unit/lock.bats` — run one file.
@@ -888,11 +892,17 @@ anything is stopped — is the `fj-space` case in `settings.bats`.
   `AGENTS.md`, `CLAUDE.md` and `CHANGELOG.md` resolves to a real file and,
   if it has one, a real anchor; the checker itself fails on a synthetic
   broken link.
+- `links.bats` — `tests/verify-links.sh` itself, offline, against a stub
+  `curl` and an isolated `LINKS_CACHE`/`LINKS_FILES`: a cached success is
+  reused and never refetched, a failure is refetched every run, a timeout
+  is reported as `HTTP 000` with no cached body, and the exact `HTTP 404`,
+  fragment-found/fragment-missing, and `ok=N fail=M` wordings.
 - `release.bats` — `SCRIPT_VERSION`'s shape, that `version`/`--version`
   print it and nothing else, that the header names the subcommand, that
   `CHANGELOG.md`'s first two sections are `[Unreleased]` and the current
   version with a link reference each, and both `make release-check` and
-  `make release-notes`, passing and failing.
+  `make release-notes`, passing and failing, including a tag carrying
+  shell metacharacters that must be reported verbatim and never run.
 
 `tests/live/`
 
@@ -943,12 +953,125 @@ Patterns that self-review reliably misses.
   out. Check every key name against
   [Forgejo's configuration cheat sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/).
 - **Report outcomes faithfully.** Say which paths ran and which did not.
-- **End with a fresh-context review.** Before opening a PR, have the final
-  diff read by a reviewer who has seen only the diff, and ask "do these hunks
-  agree with each other?", not "is each hunk correct?".
+- **End with a fresh-context review.** The reviewer sees only the repo and
+  the diff, and its prompt is the verbatim text in "The fresh-context
+  review prompt," below; the working agent adds no change-specific
+  questions to it, because a checklist written by the author of the change
+  points the reviewer at what the author already thought of — anything
+  specific the author wants checked goes in the PR description for the
+  human reviewer, or is checked by the author directly. The review runs
+  on the final diff and runs again, fresh, after every round of fixes,
+  until a pass finds nothing beyond wording (a rewrap, a sentence that
+  says the same true thing less well); those are fixed without another
+  round. A finding that changes what runs, what an operator would paste,
+  or what a sentence claims about the code or an upstream source gets
+  another round. A later round is scoped: the header names the files
+  changed since the previous round, and the reviewer reads those whole and
+  the rest of the diff only for agreement with them, so a fix that adds
+  new surface is reviewed in full without the whole diff being re-read
+  every time. A sentence that is wrong is in that second group
+  however small the edit, because an operator acts on these documents.
+  A Copilot round with zero findings on the final commit,
+  suppressed comments included, is part of "done."
+  [Copilot code review reads AGENTS.md and CLAUDE.md
+  too](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review#customizing-copilots-reviews-with-custom-instructions),
+  so it is not unprompted; it is required because it did not write the
+  change and sees only the PR, not the session.
+- **A value from outside the checkout is untrusted the moment it reaches
+  a shell line.** A tag name, a ref, a CI-supplied value, a file name an
+  operator or a forge hands in: each one is data, not code, until
+  something in the diff proves otherwise. In a Makefile recipe it is read
+  as `$${VAR}` from the environment, never expanded as `$(VAR)` into
+  recipe text: `TAG` is the one value a forge supplies, and it is the one
+  read that way; every `$(VAR)` the recipes expand today (`BATS`, `KCOV`,
+  `SHELLCHECK`, `REPORT_DIR`, `CHANGELOG`, and the Makefile's own
+  `SCRIPT`, `CURDIR`, `MAKE`, `SHELL_SOURCES`, plus `SCRIPT_VERSION`,
+  read from the script) is set by the developer's `make` line, the
+  Makefile itself, a workflow's own literal `run:` line, or the test
+  suite, never from workflow event data.
+  In a workflow `run:` step it reaches the script through the
+  environment, a `GITHUB_*` default variable or an `env:` mapping, never
+  as a `${{ }}` expression pasted into the script.
+  Give it a hostile-value test, like the metacharacter-tag case in
+  `tests/unit/release.bats`, added in PR #4 after Copilot's review found
+  the `$(TAG)` expansion in the Makefile's `release-check` recipe.
+- **A command an operator will paste is code.** It gets typed into a root
+  shell on a host that cannot afford to break, so review every command in
+  `README.md` and `docs/` the way the install command in `README.md`
+  already is: safe on failure (`curl -qfsS`, `&&` chaining, no partial
+  install left behind), and each flag that changes what happens on failure
+  explained once, the first time it appears — those are the ones an
+  operator must understand before running the command.
 - **If it is wrong, it is wrong.** A sentence the source contradicts is
   corrected in place, in the same change that cites the source. No separate
   "rewordings" section, no hedge, no leaving it because it was there first.
+
+### The fresh-context review prompt
+
+Hand this to the reviewer exactly as written. Before that, commit every
+fix (the diff command below compares commits, so an uncommitted fix is
+invisible to the reviewer; `git status --porcelain` must print nothing) and
+run `git fetch origin`: the command names `origin/main`, the fetched base,
+because a fetch never moves the local `main`, and a merge base taken from a
+stale local branch would put already-merged commits into the review. Only
+the one substitution allowed (the branch base named in the diff command,
+if it is not `origin/main`) and the one addition (a one-line header
+naming the repository path and branch and, from the second round on, the
+files changed since the previous round) may differ from that verbatim
+text. Two things the prompt's "do not change any file" does not forbid:
+`tmp/linkcache` is gitignored scratch that running the checker writes —
+a successful fetch is cached there and never expires, while a failed one
+is refetched on every run — and clearing it (`rm -rf tmp/linkcache`)
+forces a full refetch; and the release-URL failures are expected, per
+"Releases": before a version is
+tagged and its release is published all three fail, and after the tag
+push only `latest/download` still fails, until the release workflow
+finishes.
+
+```text
+You are reviewing the diff `git diff origin/main...HEAD` of this
+repository, and you have seen none of the work that produced it. Read
+AGENTS.md from the checkout first, then read every changed file whole,
+not just the diff hunks. This is a read-only review: run the linter and
+the offline test suite; run `make test-live` when the diff touches any
+function AGENTS.md's Testing section names for it; when the diff touches
+markdown, run the markdownlint job's two steps from
+`.forgejo/workflows/ci.yml`, the config write and then the `npx` line,
+and `make links`; and do not change any file.
+
+Your job is to find what is wrong, not to confirm that the change works.
+Security comes first, but it is not the whole job: treat every value that
+comes from outside the repository as hostile until proven otherwise,
+treat every claim in prose or a comment as unverified until you have
+checked it against the code or the upstream source it cites, and
+remember that every command here is run by root on a host that cannot
+afford to break. A review that finds nothing still has to say what it
+looked for and could not find; it never just says the diff is fine.
+
+Ask whether the hunks agree with each other, not only whether each hunk
+is correct on its own. If the header names files changed since a
+previous review round, read those whole and the rest of the diff only
+for agreement with them; an earlier round has covered the rest.
+
+Assume the diff contains at least one place where a value from outside
+the repository reaches a shell line unescaped, at least one command an
+operator would paste that misbehaves on failure, and at least one
+sentence in prose or a comment that the code or an upstream source
+contradicts. Find them, or say plainly why you could not.
+
+For each finding, give the file and line, what is wrong, why it matters
+to an operator, and the concrete fix. Label it "substantive" (it changes
+what runs, what an operator would paste, or what a sentence claims about
+the code or an upstream source; a sentence that is wrong is substantive
+however small the fix) or "wording" (the text stays true and only reads
+better), so the author can tell whether another round is owed. Say
+explicitly what checks out clean, and list anything you could not
+verify.
+
+End with a verdict: mergeable as is, mergeable after the listed fixes, or
+not mergeable, with the fixes in the order to apply them. Do not fix
+anything yourself.
+```
 
 ## Out of scope
 
@@ -971,17 +1094,23 @@ Patterns that self-review reliably misses.
 - Cite with inline links, `[text](url)`, where the link text is the words
   of the claim.
 - A URL that has to stand alone goes in angle brackets.
-- **Every URL is checked by fetching it.** `tmp/verify-links.sh` (gitignored,
-  recreate it from the description here if it is gone) extracts every
-  `https://` URL from `README.md`, `docs/*.md`, `AGENTS.md`, `CHANGELOG.md`
-  and the script, requires HTTP 200, requires a `#fragment` to match an element
-  id on the page, requires a `#Lnn` fragment on a pinned source link to
-  exist and to contain the phrase the fact quotes, and checks CVE ids
-  through MITRE's API because
-  cve.org itself answers 200 for any id. Run it after any change that adds
-  or moves a link. Source links are pinned to the commits named in the
-  Facts preamble; when a fact is re-verified against a newer commit, move
-  the pin and the line numbers together.
+- **Every URL is checked by fetching it.** `make links` runs
+  `tests/verify-links.sh`, which extracts every `https://` URL from
+  `README.md`, `docs/*.md`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md` and
+  the script (skipping one that holds a `$`, a `<`, or `.example.com`,
+  since those are placeholders, not links), requires HTTP 200, requires
+  a `#fragment` to match an element id on the page, requires a `#Lnn`
+  fragment on a pinned source link to exist and, where the EXPECT table
+  registers a phrase for it, to contain that phrase, and checks CVE ids
+  through MITRE's API because cve.org itself answers 200 for any id. A
+  `code.forgejo.org/api/swagger#/...` fragment is the one exception to the
+  element-id rule: swagger's fragments are client-side routes, not element
+  ids, so that one is checked against the operation id in the published
+  swagger spec instead. Every fetch sends a `User-Agent`, since NVD and some
+  other hosts answer a bare `curl` with an empty body. Run it after any
+  change that adds or moves a link. Source links are pinned to the commits
+  named in the Facts preamble; when a fact is re-verified against a newer
+  commit, move the pin and the line numbers together.
 
 ## Releases
 
@@ -1009,8 +1138,8 @@ Patterns that self-review reliably misses.
   anything to point at yet. The first two point at the tag itself and
   clear as soon as the tag is pushed; the third points at `latest`, which
   needs a published release, not just a tag, so it clears only once the
-  release workflow has finished. Run `tmp/verify-links.sh` after the
-  release workflow finishes, not merely after the tag is pushed.
+  release workflow has finished. Run `make links` after the release
+  workflow finishes, not merely after the tag is pushed.
 
 ## Documentation
 
@@ -1023,5 +1152,5 @@ in the same change as the behavior they describe. A relative link between
 `README.md`, `docs/*.md`, `AGENTS.md`, `CLAUDE.md` and `CHANGELOG.md` (a
 path, with or without a `#anchor`) is checked by `tests/unit/docs.bats`,
 which fails if the target file or heading does not exist; a `https://` URL
-in any of them is checked separately, by `tmp/verify-links.sh` (see
+in any of them is checked separately, by `tests/verify-links.sh` (see
 "Markdown style", above).

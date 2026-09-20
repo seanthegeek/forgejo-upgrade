@@ -24,7 +24,18 @@ split:
    plan.
 3. **Review with Fable** (fall back to Opus only if Fable is unavailable).
    After implementation, all work must be reviewed by Fable before it is
-   considered done.
+   considered done. The review uses the prompt in AGENTS.md's "The
+   fresh-context review prompt" verbatim, apart from the one substitution
+   allowed (the branch base, if it is not `origin/main`) and the one
+   addition (a one-line header naming the repository path and branch and,
+   from the second round on, the files changed since the previous round),
+   and runs again after every round of fixes, on the final diff,
+   including `make test-live` when the diff touches any function
+   AGENTS.md's Testing section names for it, until a pass finds nothing
+   beyond wording (the text stays true and only reads better) — a
+   finding that changes what runs, what an operator would paste, or what
+   a sentence claims about the code or an upstream source, including any
+   sentence that is wrong, gets another round.
 
 **PR reviews** must also use Fable, with Opus as the fallback if Fable is
 unavailable.
@@ -37,7 +48,8 @@ unavailable.
   re-read the "Facts about Forgejo release artifacts" section in `AGENTS.md`.
   Every item there was a bug found by running against a real release, and
   the obvious-looking code was the wrong code.
-- After any change to those functions, run `make test-live` (and
+- After any change to those functions, or to any other function AGENTS.md's
+  Testing section names for the live suite, run `make test-live` (and
   `make test`) and include the output in your summary. Lint alone is not
   evidence here.
 - This machine does not run Forgejo. Do not claim the stop, backup, install,

@@ -32,8 +32,10 @@ curl -qfsSLO https://github.com/seanthegeek/forgejo-upgrade/releases/latest/down
 ```
 
 `-f` makes `curl` fail on an HTTP error instead of saving the error page as
-the script, `-q` keeps a `~/.curlrc` out of it, and `&&` installs only what
-was downloaded.
+the script, `-L` follows GitHub's redirect from `latest/download` to the
+release asset (without it `-f` sees only the redirect and saves an empty
+file), `-q` keeps a `~/.curlrc` out of it, `-S` still prints the error that
+`-s` would otherwise hide, and `&&` installs only what was downloaded.
 
 The script upgrades an existing install; it refuses to run when the binary it is
 asked to upgrade is missing. Run `forgejo-upgrade version` at any time to see
@@ -136,9 +138,10 @@ tools are dev-only and are never needed on the Forgejo host:
 
 ```bash
 sudo apt install bats kcov attr acl shellcheck
-make lint        # shellcheck over the script, the helpers and every stub
+make lint        # shellcheck over the script, the helpers, the link checker and every stub
 make test        # the offline suite in tests/unit, no network
 make test-live   # tests/live: downloads a real runner release and verifies it
+make links       # check every https:// URL in the docs and script (network)
 make coverage    # kcov line coverage of the offline suite
 ```
 
