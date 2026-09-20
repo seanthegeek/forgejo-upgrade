@@ -13,7 +13,7 @@ Only one `forgejo`, `runner`, or `rollback` invocation runs at a time; a second
 one stops at the lock held in `/run/forgejo-upgrade.lock`.
 
 The step-by-step walkthrough of what each of those does is in
-[How the script works](docs/how-it-works.md).
+[How the script works](how-it-works.md).
 
 Check what is installed against what is published:
 
@@ -42,7 +42,7 @@ database schema. After a major upgrade,
 [Forgejo refuses to start the older release](https://forgejo.org/docs/latest/admin/upgrade/#unexpected-database-version)
 against the migrated database, so rollback deliberately leaves the service
 stopped and tells you what to restore first: for SQLite, the dump zip in
-[`BACKUP_DIR`](docs/configuration.md#forgejo-settings); for PostgreSQL or
+[`BACKUP_DIR`](configuration.md#forgejo-settings); for PostgreSQL or
 MySQL, the native dump you took before the upgrade, because the zip's SQL
 is not a safe restore — see Forgejo's own
 [upgrade guide's Backup section](https://forgejo.org/docs/latest/admin/upgrade/#backup)

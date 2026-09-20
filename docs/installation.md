@@ -37,5 +37,5 @@ Run `sudo forgejo-upgrade settings` and read each line. Every value can be
 overridden with the environment variable it is labelled with, except
 `RUNNER_REG_FILE`, which the script derives from `RUNNER_HOME` and
 `RUNNER_CONFIG` and does not read from the environment. See
-[Configuration](docs/configuration.md) for what each of those variables
+[Configuration](configuration.md) for what each of those variables
 does and its default.
