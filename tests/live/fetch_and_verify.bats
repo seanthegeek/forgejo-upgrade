@@ -29,10 +29,13 @@ setup_file() {
   export SCRIPT
   export TMPDIR=$BATS_FILE_TMPDIR
 
-  # The keyring the developer (or CI) really uses: ensure_key importing into
-  # it is the documented path, and it is what every later test reads, so
-  # whatever GNUPGHOME is in force here is recorded for setup to restore.
-  printf '%s\n' "${GNUPGHOME:-}" > "$BATS_FILE_TMPDIR/gnupghome"
+  # A keyring of this file's own, empty to begin with, so ensure_key's import
+  # runs on every pass rather than only on a machine that lacks the key, and
+  # the developer's personal keyring is never touched. Its path is recorded
+  # for setup to restore, since common_setup clears GNUPGHOME.
+  mkdir -m 700 "$BATS_FILE_TMPDIR/gnupg"
+  export GNUPGHOME=$BATS_FILE_TMPDIR/gnupg
+  printf '%s\n' "$GNUPGHOME" > "$BATS_FILE_TMPDIR/gnupghome"
 
   local ver assets=$BATS_FILE_TMPDIR/assets
   mkdir -p "$assets"
@@ -70,9 +73,14 @@ setup() {
   # common_setup clears GNUPGHOME so a developer's environment cannot change a
   # test's answer; here the keyring setup_file imported the release key into is
   # exactly what the tests have to read, so it is put back.
-  local home
-  home=$(cat "$BATS_FILE_TMPDIR/gnupghome")
-  [[ -z $home ]] || export GNUPGHOME=$home
+  GNUPGHOME=$(cat "$BATS_FILE_TMPDIR/gnupghome")
+  export GNUPGHOME
+}
+
+teardown_file() {
+  # gpg starts an agent and a dirmngr for the keyring; stop them so nothing
+  # of this file's is left running once bats removes the directory.
+  GNUPGHOME=$BATS_FILE_TMPDIR/gnupg gpgconf --kill all >/dev/null 2>&1 || true
 }
 
 @test "fetch_and_verify downloads the current runner release, verifies it, and prints its path" {

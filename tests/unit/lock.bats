@@ -128,13 +128,16 @@ setup() {
 }
 
 @test "a lock whose pid file cannot be written is released rather than left behind" {
-  # umask 0777 leaves the new directory at mode 000, so mkdir succeeds and the
-  # pid write inside it fails. The lock is owned from the moment the directory
-  # exists, so on_exit has to remove it or every later run stops at a lock
-  # nobody holds.
+  # The failure is induced with a mkdir wrapper that puts a directory where the
+  # pid file goes, so the write fails with "Is a directory" for any user. An
+  # earlier version used umask 0777 to leave the lock directory at mode 000,
+  # which does not stop root: the Forgejo CI job runs as root in its container
+  # and the write went through there. The lock is owned from the moment the
+  # directory exists, so on_exit has to remove it or every later run stops at
+  # a lock nobody holds.
   run --separate-stderr in_script '
     LOCK_DIR=$1
-    umask 0777
+    mkdir() { command mkdir "$@" && command mkdir "$1/pid"; }
     acquire_lock
     echo UNEXPECTED-RETURNED
   ' "$LOCK"
@@ -143,7 +146,7 @@ setup() {
     return 1
   fi
   refute_output_contains "UNEXPECTED-RETURNED"
-  assert_stderr_contains "Permission denied"
+  assert_stderr_contains "Is a directory"
   if [[ -d $LOCK ]]; then
     printf 'the lock directory %s was left behind after the pid write failed\n' "$LOCK" >&2
     return 1

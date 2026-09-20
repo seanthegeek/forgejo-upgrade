@@ -706,8 +706,10 @@ and bats owns the `EXIT` trap of its own test process, so sourcing the
 script there would replace it and bats would lose track of the test. The
 script's source guard — `if (return 0 2>/dev/null); then return 0; fi`,
 right after `# --- main` and before the command dispatch — is what makes
-`source forgejo-upgrade.sh` load definitions only, with no dispatch and no
-side effect; it detects sourcing by whether `return` outside a function
+`source forgejo-upgrade.sh` load the definitions and skip the dispatch.
+Everything above the guard still runs: sourcing creates `WORKDIR` and arms
+the `EXIT`, `INT` and `TERM` traps, which is what the harness relies on for
+cleanup. The guard detects sourcing by whether `return` outside a function
 succeeds, not by comparing `$0`, because the test suite deliberately sets
 `$0` to the script's own path. That is on purpose: inside `in_script`, `$0`
 has to be the real path so that `rollback_command`'s `%q "$0"` and the

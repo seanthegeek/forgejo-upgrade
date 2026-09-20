@@ -2,7 +2,9 @@
 # The source guard and the usage text. The guard is what lets the whole suite
 # source forgejo-upgrade.sh instead of extracting its definitions into a
 # scratch copy, so if it breaks, every other file here tests nothing: sourcing
-# must load every definition, print not a word, run no command and exit 0. The
+# must load every definition, print nothing, dispatch no command and exit 0.
+# What runs above the guard still runs - WORKDIR is created and the traps are
+# armed - and that is not what these tests check; on_exit.bats does. The
 # usage half guards the AGENTS.md pairing "the header comment and the `sed`
 # range that prints it": the range is read back out of the script rather than
 # written here twice, so moving the end of the header without moving the range
