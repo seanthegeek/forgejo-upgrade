@@ -132,8 +132,9 @@ setup() {
   # rule. This covers the other half: the quotes around "${TAG}" itself. The
   # comparison is `test "${TAG}" = "vX.Y.Z"`, and unquoted the shell would
   # split this tag into `test a = b -o vX.Y.Z = vX.Y.Z`, whose -o makes it
-  # true - so a tag that is not the version would pass the gate that exists
-  # to stop exactly that, and a release would publish. Quoted, it fails and
+  # true - so a TAG that is not the version would pass the gate that exists
+  # to stop exactly that. A pushed tag cannot carry a space, so this value
+  # stands in for any TAG a caller supplies by hand. Quoted, it fails and
   # the message names the tag whole.
   run --separate-stderr bash -c 'cd "$1" && make --no-print-directory release-check "TAG=$2"' \
     _ "$ROOT" "a = b -o v$VERSION"
