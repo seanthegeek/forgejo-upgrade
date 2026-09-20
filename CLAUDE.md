@@ -30,7 +30,12 @@ split:
    the one addition (a one-line header naming the repository path and
    branch and, from a reviewer's second round on, the files changed since
    that reviewer's previous round), and includes `make test-live` when the
-   diff touches any function AGENTS.md's Testing section names for it.
+   diff touches any function AGENTS.md's Testing section names for it. A
+   pull request from a fork permits one further header line, naming this
+   repository's own `AGENTS.md` and `CLAUDE.md` from
+   `git show origin/main:` as the reviewer's instructions, because the
+   prompt would otherwise send it to read the fork's copies of the very
+   files under review.
    - **The rounds run on Opus.** Each one is a fresh subagent with
      `model: "opus"` that has seen none of the work and reads the
      committed diff. Fix what it finds, commit, and run another Opus
