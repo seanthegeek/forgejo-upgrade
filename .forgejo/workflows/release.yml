@@ -1,0 +1,101 @@
+# Forgejo Actions. Runs on a pushed `vX.Y.Z` tag: verifies the tag, the
+# script's own SCRIPT_VERSION, and CHANGELOG.md's first released section all
+# agree, lints and tests the script offline, then publishes a Forgejo
+# release with the script attached. This file and .github/workflows/release.yml
+# are kept step for step the same so the two can be diffed; every place they
+# differ carries a comment saying why.
+#
+# `runs-on: docker` and the node:22-trixie image match ci.yml's job, for the
+# same reasons given there: the container needs node for the checkout
+# action, and trixie carries a bats and, from trixie-backports, a shellcheck
+# matching the one Ubuntu 26.04 gives the GitHub job.
+#
+# A release is not the moment to depend on a keyserver or the release API,
+# so only the offline suite runs here - no coverage, no tests/live.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Forgejo does not document enforcement of `permissions`; it is kept
+# identical to the GitHub workflow so the two files diff cleanly. The actual
+# write happens through forgejo-release's own token, below.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: docker
+    container:
+      image: node:22-trixie
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        # Same v4 as ci.yml, and for the same reason: this action runs with
+        # the container's own node, not GitHub's Node 24 runner.
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Install the test tools
+        # shellcheck comes from trixie-backports; see ci.yml for why trixie
+        # itself is one version behind what this repo lints with. acl and
+        # attr provide setfacl/setfattr for the install_binary tests, so
+        # those cases run here instead of silently skipping.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          echo 'deb http://deb.debian.org/debian trixie-backports main' \
+            > /etc/apt/sources.list.d/backports.list
+          apt-get update
+          apt-get install -y --no-install-recommends bats make acl attr
+          apt-get install -y --no-install-recommends -t trixie-backports shellcheck
+
+      - name: Lint the shell
+        run: make lint
+
+      - name: Run the offline test suite
+        run: make test
+
+      - name: Verify the tag, script, and changelog agree
+        run: make release-check TAG="$GITHUB_REF_NAME"
+
+      - name: Write the release notes
+        run: make release-notes > notes.md
+
+      - name: Compute the release title
+        # forgejo-release's `title` input takes a plain string, not an
+        # expression with a substring strip, so the "v" prefix is removed
+        # here and read back with ${{ env.VERSION }} below.
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Copy the script into the release directory
+        # forgejo-release uploads whatever release-dir holds; the GitHub
+        # workflow instead names the file on the gh release create command
+        # line, since gh has no equivalent directory argument.
+        run: |
+          mkdir -p dist/release
+          cp forgejo-upgrade.sh dist/release/
+
+      - name: Publish the release
+        # Pinned to the exact tag v2.13.4, not a floating v2: this action
+        # publishes no major-version tag at all (checked against its tags
+        # API today, unlike the checkout action above and the
+        # upload-artifact action in ci.yml, which do).
+        # There is no sha256sum input on this action - checked against its
+        # README and action.yml today - so that part of the original plan
+        # is dropped rather than invented. A checksum of this release asset
+        # would be a feature of its own (the script's GPG and sha256 checks
+        # verify the Forgejo binaries it downloads, not itself), and neither
+        # forge publishes one for it today.
+        # `token` is left at the action's own default, forge.token, which is
+        # this workflow's automatic token. If this Forgejo instance's
+        # automatic token cannot create releases, add a RELEASE_TOKEN secret
+        # with write:repository scope and pass it here as
+        # `token: ${{ secrets.RELEASE_TOKEN }}`.
+        uses: https://code.forgejo.org/actions/forgejo-release@v2.13.4
+        with:
+          direction: upload
+          tag: ${{ github.ref_name }}
+          title: ${{ env.VERSION }}
+          release-dir: dist/release
+          release-notes-file: notes.md

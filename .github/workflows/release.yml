@@ -1,0 +1,63 @@
+# GitHub Actions. Runs on a pushed `vX.Y.Z` tag: verifies the tag, the
+# script's own SCRIPT_VERSION, and CHANGELOG.md's first released section all
+# agree, lints and tests the script offline, then publishes a GitHub release
+# with the script attached. This file and .forgejo/workflows/release.yml are
+# kept step for step the same so the two can be diffed; every place they
+# differ carries a comment saying why.
+#
+# A release is not the moment to depend on a keyserver or the release API,
+# so only the offline suite runs here - no coverage, no tests/live.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # ubuntu-26.04 for the same reason ci.yml's test job pins it: the label
+    # carries the same bats and shellcheck the repo is linted and tested
+    # with by hand, so a finding here is the finding a developer already saw.
+    # This job needs no kcov, but staying on the pinned image keeps it
+    # identical to the CI job either way.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Install the test tools
+        # acl and attr provide setfacl/setfattr for the install_binary
+        # tests, so those cases run here instead of silently skipping.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bats shellcheck acl attr
+
+      - name: Lint the shell
+        run: make lint
+
+      - name: Run the offline test suite
+        run: make test
+
+      - name: Verify the tag, script, and changelog agree
+        run: make release-check TAG="$GITHUB_REF_NAME"
+
+      - name: Write the release notes
+        run: make release-notes > notes.md
+
+      - name: Publish the release
+        # gh and its automatic token are already on the runner image; no
+        # extra permission beyond this job's own contents: write is needed.
+        # The title is the tag without its leading "v", per AGENTS.md's
+        # Releases section.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" forgejo-upgrade.sh \
+            --title "${GITHUB_REF_NAME#v}" --notes-file notes.md

@@ -8,6 +8,7 @@
 #   forgejo-upgrade.sh forgejo <ver|latest>   upgrade the Forgejo server
 #   forgejo-upgrade.sh runner  <ver|latest>   upgrade forgejo-runner
 #   forgejo-upgrade.sh rollback forgejo|runner [--no-start]   restore the previous binary
+#   forgejo-upgrade.sh version                print this script's version
 #
 # Overrides (each is read from the systemd unit or app.ini when unset):
 #   FORGEJO_SERVICE    forgejo
@@ -117,6 +118,10 @@ RUNNER_REG_FILE_SRC=""
 # install that is not there.
 FORGEJO_PRESENT=1
 RUNNER_PRESENT=1
+
+# The version of this script, bumped per the Releases section of AGENTS.md;
+# nothing to do with the Forgejo or runner versions it installs.
+SCRIPT_VERSION=0.1.0
 
 RELEASE_KEY=EB114F5E6C0DC2BCDD183550A4B61A2DC5923710
 KEYSERVER=hkps://keys.openpgp.org
@@ -1982,7 +1987,14 @@ case "${1:-}" in
   forgejo)  upgrade_forgejo "${2:?usage: $0 forgejo <version|latest>}" ;;
   runner)   upgrade_runner  "${2:?usage: $0 runner <version|latest>}" ;;
   rollback) rollback "${2:-}" "${3:-}" ;;
+  version|--version) printf 'forgejo-upgrade %s\n' "$SCRIPT_VERSION" ;;
   # The usage text is this script's own header comment. Adding a line to it
   # means moving the end of this range, which runs to the last header line.
-  *) sed -n '2,36p' "$0"; exit 1 ;;
+  # The version comes from SCRIPT_VERSION, not the header comment, so there
+  # is one source of truth for the number.
+  *)
+    printf 'forgejo-upgrade %s\n' "$SCRIPT_VERSION"
+    sed -n '2,37p' "$0"
+    exit 1
+    ;;
 esac

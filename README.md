@@ -24,14 +24,20 @@ It exists because Forgejo has shipped a security release nearly every month of
 
 ## Installation
 
-Copy the script to each host that runs Forgejo or the runner:
+Fetch the latest release and copy it to each host that runs Forgejo or the
+runner:
 
 ```bash
-sudo install -m 755 forgejo-upgrade.sh /usr/local/sbin/forgejo-upgrade
+curl -qfsSLO https://github.com/seanthegeek/forgejo-upgrade/releases/latest/download/forgejo-upgrade.sh && sudo install -m 755 forgejo-upgrade.sh /usr/local/sbin/forgejo-upgrade
 ```
 
+`-f` makes `curl` fail on an HTTP error instead of saving the error page as
+the script, `-q` keeps a `~/.curlrc` out of it, and `&&` installs only what
+was downloaded.
+
 The script upgrades an existing install; it refuses to run when the binary it is
-asked to upgrade is missing.
+asked to upgrade is missing. Run `forgejo-upgrade version` at any time to see
+which release is installed on a host.
 
 Requirements: `bash`, `curl`, `gpg`, `runuser` (util-linux, present on every
 systemd host) or `sudo`, `sed`, `grep`, GNU coreutils (`install`, `sha256sum`,
@@ -65,6 +71,7 @@ does and its default.
 | `forgejo-upgrade forgejo <version\|latest>` | Upgrade the Forgejo server. |
 | `forgejo-upgrade runner <version\|latest>` | Upgrade forgejo-runner. |
 | `forgejo-upgrade rollback forgejo\|runner [--no-start]` | Stop, restore the previous binary, then start and confirm it is active — unless `--no-start` is given or [the major version changed](https://forgejo.org/docs/latest/admin/upgrade/#unexpected-database-version), in which case it leaves the service stopped and prints what to restore first. |
+| `forgejo-upgrade version` | Print this script's own version and exit. |
 
 Only one `forgejo`, `runner`, or `rollback` invocation runs at a time; a second
 one stops at the lock held in `/run/forgejo-upgrade.lock`.

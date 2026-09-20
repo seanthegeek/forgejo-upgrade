@@ -38,7 +38,7 @@ common_setup() {
 # Write a snippet to a file that runs as if it were the script itself, and
 # print the file's path. BASH_ARGV0 (bash 5.0 and later) makes $0 the script's
 # own path inside the file, so rollback_command's %q "$0" and the usage text's
-# `sed -n '2,36p' "$0"` see the real path, and `source "$0"` in the snippet
+# `sed -n '2,37p' "$0"` see the real path, and `source "$0"` in the snippet
 # loads the script. The snippet is run from a file rather than handed to
 # `bash -c` for kcov's sake: kcov traces bash through a PS4 that expands
 # ${BASH_SOURCE}, and once the script's `set -u` is in force a command at the

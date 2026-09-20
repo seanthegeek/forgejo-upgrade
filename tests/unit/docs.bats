@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
-# Every relative markdown link among README.md, docs/*.md, AGENTS.md, and
-# CLAUDE.md: the target file has to exist relative to the file that links
-# it, and if the link has an anchor, some heading in the target has to slug
-# to it. Splitting README.md into docs/ (PR #3) created a class of breakage
+# Every relative markdown link among README.md, docs/*.md, AGENTS.md,
+# CLAUDE.md, and CHANGELOG.md: the target file has to exist relative to the
+# file that links it, and if the link has an anchor, some heading in the
+# target has to slug to it. Splitting README.md into docs/ (PR #3) created a
+# class of breakage
 # nothing else in this suite catches — markdownlint does not resolve
 # relative links, and neither does shellcheck. `https://` URLs are a
 # separate concern, checked by tmp/verify-links.sh, not here.
@@ -116,8 +117,9 @@ check_file_links() {
 
 # --- the real files ------------------------------------------------------
 
-@test "every relative link in README.md, docs, AGENTS.md and CLAUDE.md resolves" {
-  local files=("$ROOT/README.md" "$ROOT"/docs/*.md "$ROOT/AGENTS.md" "$ROOT/CLAUDE.md")
+@test "every relative link in README.md, docs, AGENTS.md, CLAUDE.md and CHANGELOG.md resolves" {
+  local files=("$ROOT/README.md" "$ROOT"/docs/*.md "$ROOT/AGENTS.md" \
+    "$ROOT/CLAUDE.md" "$ROOT/CHANGELOG.md")
   local f target total=0 broken=0
   for f in "${files[@]}"; do
     while IFS= read -r target; do
