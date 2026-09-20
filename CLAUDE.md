@@ -40,17 +40,17 @@ split:
      upstream source, including any sentence that is wrong, gets another
      round.
    - **Fable reviews last**, on the final diff. It is the last of the
-     model reviews, not the whole of "done": AGENTS.md's Copilot round
-     with zero findings on the final commit is part of that too. Fable has
-     seen none of the diff, so its first round carries no files-changed
-     line and reads all of it, however many Opus rounds came before.
-     Wording-only findings are fixed without another round. Anything
-     substantive goes back through the Opus loop — fix, commit, Opus
-     rounds until one finds nothing beyond wording — and then to Fable
-     again.
-   - If Fable is unavailable, Opus runs the final review too, and the
-     summary says the last review was Opus rather than claiming it was
-     Fable.
+     reviews in this model split, not the whole of "done": AGENTS.md's
+     Copilot round with zero findings on the final commit is part of that
+     too. No earlier round on this diff was run by Fable, so its first
+     round carries no files-changed line and reads all of it, however many
+     Opus rounds came before. Wording-only findings are fixed without
+     another round. Anything substantive goes back through the Opus loop —
+     fix, commit, Opus rounds until one finds nothing beyond wording — and
+     then to Fable again.
+   - If Fable is unavailable, the loop's last clean Opus pass stands as
+     the final review, and the summary says the last review was Opus
+     rather than claiming it was Fable.
 
 **PR reviews** run on Fable, with Opus as the fallback if Fable is
 unavailable.

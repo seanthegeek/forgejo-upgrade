@@ -965,14 +965,18 @@ Patterns that self-review reliably misses.
   says the same true thing less well); those are fixed without another
   round. A finding that changes what runs, what an operator would paste,
   or what a sentence claims about the code or an upstream source gets
-  another round. A later round by the same reviewer is scoped: the
-  header names the files changed since that reviewer's previous round, and
-  it reads those whole and the rest of the diff only for agreement with
-  them, so a fix that adds new surface is reviewed in full without the
-  whole diff being re-read every time. A reviewer that has not seen the
-  diff before gets no files-changed line and reads all of it, however many
-  rounds have already run. A sentence that is wrong is in that second group
-  however small the edit, because an operator acts on these documents.
+  another round. A sentence that is wrong is in that second group however
+  small the edit, because an operator acts on these documents. Every round
+  runs in fresh context, so what a reviewer remembers never decides how
+  much of the diff it reads; the same reviewer means the same model
+  reading this diff again. A later round by the same reviewer is scoped:
+  the header names the files changed since that reviewer's previous round,
+  and that reviewer reads those whole and the rest of the diff only for
+  agreement with them, resting on the author's word that its own earlier
+  round covered the rest, so a fix that adds new surface is reviewed in
+  full without the whole diff being re-read every time. A reviewer no
+  earlier round used gets no files-changed line and reads the whole diff,
+  however many rounds another model has already run.
   A Copilot round with zero findings on the final commit,
   suppressed comments included, is part of "done."
   [Copilot code review reads AGENTS.md and CLAUDE.md
