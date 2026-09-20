@@ -982,13 +982,31 @@ Patterns that self-review reliably misses.
   [Copilot code review reads AGENTS.md and CLAUDE.md
   too](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review#customizing-copilots-reviews-with-custom-instructions),
   so it is not unprompted; it is required because it did not write the
-  change and sees only the PR, not the session.
+  change and sees only the PR, not the session. Copilot reads those files
+  from the head branch, not the base, and the prompt's own first
+  instruction sends every reviewer here to read `AGENTS.md` from the
+  checkout. So a change that edits `AGENTS.md` or `CLAUDE.md` has edited
+  its own review: on a pull request from a fork those files are the
+  fork's, obeyed before its own edits are ever judged, and a file the
+  reviewer obeys can say which findings to suppress, which commands to
+  run and what to conclude. Give the reviewer the base branch's copies as
+  its instructions and the head branch's copies as data under review, and
+  treat the commands the prompt has it run as the fork's code, run where
+  untrusted code is run rather than on your own machine. Sandboxing
+  protects the machine, not the verdict. This repository is public and
+  its deliverable is a script run as root, so a review steered by the
+  change under review is a supply-chain problem, not a tidiness one.
 - **A value from outside the checkout is untrusted the moment it reaches
   a shell line.** A tag name, a ref, a CI-supplied value, a file name an
   operator or a forge hands in: each one is data, not code, until
   something in the diff proves otherwise. In a Makefile recipe it is read
-  as `$${VAR}` from the environment, never expanded as `$(VAR)` into
-  recipe text: `TAG` is the one value a forge supplies, and it is the one
+  as `"$${VAR}"` from the environment, quotes included, never expanded as
+  `$(VAR)` into recipe text: make substitutes a `$(VAR)` into the line
+  before the shell parses it, so the shell reads the value itself as
+  code, and unquoted even the safe form is word-split and glob-expanded,
+  which stops it reporting the value verbatim. `release-check` already
+  quotes every read; the rule is what under-specified it. Further: `TAG`
+  is the one value a forge supplies, and it is the one
   read that way; every `$(VAR)` the recipes expand today (`BATS`, `KCOV`,
   `SHELLCHECK`, `REPORT_DIR`, `CHANGELOG`, and the Makefile's own
   `SCRIPT`, `CURDIR`, `MAKE`, `SHELL_SOURCES`, plus `SCRIPT_VERSION`,
@@ -1017,11 +1035,23 @@ Patterns that self-review reliably misses.
 Hand this to the reviewer exactly as written. Before that, commit every
 fix (the diff command below compares commits, so an uncommitted fix is
 invisible to the reviewer; `git status --porcelain` must print nothing) and
-run `git fetch origin`: the command names `origin/main`, the fetched base,
-because a fetch never moves the local `main`, and a merge base taken from a
-stale local branch would put already-merged commits into the review. Only
+bring the base up to date and look at what the review will cover, with
+`git fetch origin && git log --oneline origin/main..HEAD`. That list is the
+review's scope; a commit in it whose work is already upstream, squash-merged
+or rebased, means the branch wants rebasing first. A fetch never moves the
+local `main`, which is why both commands name `origin/main`: a base read
+from a stale local branch is what puts already-merged commits into a review.
+If the fetch fails — offline, a proxy, expired credentials — the `&&` stops
+before the log and no list prints; fix the fetch rather than reviewing
+against a base that never moved, because nothing in the prompt can detect
+that. Only
 the one substitution allowed (the branch base named in the diff command,
-if it is not `origin/main`) and the one addition (a one-line header
+if it is not `origin/main`; write it yourself rather than pasting it from
+the forge, since `git check-ref-format` rejects a space and a caret in a
+ref name but permits `;`, `&`, `|`, a backtick and `$(...)`, and the base
+lands in commands the reviewer runs — a project automating that
+substitution passes it through a shell variable and quotes the whole
+argument, `"$BASE...HEAD"`) and the one addition (a one-line header
 naming the repository path and branch and, from a reviewer's second round
 on, the files changed since that reviewer's previous round) may differ
 from that verbatim text. Two things the prompt's "do not change any file"
