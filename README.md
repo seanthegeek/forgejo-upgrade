@@ -22,6 +22,10 @@ see [Contain the runner](docs/hardening.md#contain-the-runner) for why.
   or the runner can reach.
 - [Development](docs/development.md): Instructions for development forgejo-upgrade.
 
+## Why this is hosted on GitHub
+
+I use GitHub Copilot AI to double-check the work of Claude Code, as you can see in the PR and commit history.
+
 ## License
 
 Apache License 2.0. See `LICENSE`.
